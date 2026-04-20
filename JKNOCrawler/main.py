@@ -16,7 +16,7 @@ from parser import (
     RESULT_STATS_COLS,
 )
 
-OUT_COLS = ["JKNO", "JKNAME", "BIRTHDAY", "AGE"] + TABLE1_COLS + TABLE2_COLS + RESULT_STATS_COLS
+OUT_COLS = ["MEET", "JKNO", "JKNAME", "BIRTHDAY", "AGE"] + TABLE1_COLS + TABLE2_COLS + RESULT_STATS_COLS
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (compatible; netkeiba-jockey-crawler/1.0)"
@@ -26,7 +26,7 @@ HEADERS = {
 def fetch_url(url: str, timeout: int = 20) -> str:
     r = requests.get(url, headers=HEADERS, timeout=timeout)
     r.raise_for_status()
-    r.encoding = r.apparent_encoding
+    r.encoding = "EUC-JP"
     return r.text
 
 
@@ -109,6 +109,7 @@ import sys
 def main():
     base_dir = Path(__file__).resolve().parent
     date_suffix = sys.argv[1] if len(sys.argv) > 1 else "unknown"
+    meet_name = date_suffix.split('_')[0] if '_' in date_suffix else "unknown"
     
     in_csv = base_dir / "nodata" / f"JKNO_{date_suffix}_list.csv"
     out_csv = base_dir / "data" / f"JKNO_result_{date_suffix}.csv"
@@ -129,6 +130,7 @@ def main():
             # ✅ result.html 매핑 값 추가
             stat = parse_jockey_result_stats(html_result, jkno=jkno, debug=debug)
             row.update(stat)
+            row["MEET"] = meet_name
 
             rows.append(row)
 

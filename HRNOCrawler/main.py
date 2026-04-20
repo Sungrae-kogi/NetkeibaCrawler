@@ -46,7 +46,8 @@ async def fetch_single_horse(
         session: aiohttp.ClientSession,
         sem: asyncio.Semaphore,
         lock: asyncio.Lock,
-        out_path: Path
+        out_path: Path,
+        meet_name: str
 ) -> None:
     async with sem:
         url = build_horse_url(hrno)
@@ -55,14 +56,16 @@ async def fetch_single_horse(
             await asyncio.sleep(delay)
 
             data = await parse_horse_page(url, hrno, session=session)
+            new_data = {"MEET": meet_name}
+            new_data.update(data)
 
             async with lock:
                 file_exists = out_path.exists()
                 with open(out_path, "a", encoding="utf-8-sig", newline="") as f:
-                    writer = csv.DictWriter(f, fieldnames=list(data.keys()))
+                    writer = csv.DictWriter(f, fieldnames=list(new_data.keys()))
                     if not file_exists:
                         writer.writeheader()
-                    writer.writerow(data)
+                    writer.writerow(new_data)
             print(f"[{idx}/{total}] OK HRNO={hrno}")
 
         except Exception as e:
@@ -70,7 +73,8 @@ async def fetch_single_horse(
 
 async def run_async(
         hrno_list: list[str],
-        out_path: Path
+        out_path: Path,
+        meet_name: str
 ) -> None:
     total = len(hrno_list)
     sem = asyncio.Semaphore(3)
@@ -81,7 +85,7 @@ async def run_async(
         for idx, hrno in enumerate(hrno_list, start=1):
             task = asyncio.create_task(
                 fetch_single_horse(
-                    hrno, idx, total, session, sem, lock, out_path
+                    hrno, idx, total, session, sem, lock, out_path, meet_name
                 )
             )
             tasks.append(task)
@@ -103,6 +107,7 @@ import sys
 if __name__ == "__main__":
     base_dir = Path(__file__).resolve().parent
     date_suffix = sys.argv[1] if len(sys.argv) > 1 else "unknown"
+    meet_name = date_suffix.split('_')[0] if '_' in date_suffix else "unknown"
     
     hrno_csv = base_dir / "nodata" / f"HRNO_{date_suffix}_list.csv"
     
@@ -124,5 +129,5 @@ if __name__ == "__main__":
     if not target_hrnos:
         print("🎉 모든 크롤링이 이미 완료되었습니다!")
     else:
-        asyncio.run(run_async(target_hrnos, out_csv))
+        asyncio.run(run_async(target_hrnos, out_csv, meet_name))
         print(f"🎉 크롤링 종료! 결과 파일: {out_csv}")

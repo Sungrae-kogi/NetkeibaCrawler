@@ -12,6 +12,11 @@ def extract_and_save_ids(input_files):
 
     for input_file in input_files:
         file_path = Path(input_file)
+        
+        # 만약 파일이 현재 경로에 없다면 data/ 폴더 안을 확인
+        if not file_path.exists():
+            file_path = Path(__file__).resolve().parent / "data" / input_file
+            
         if not file_path.exists():
             print(f"▶ 파일이 없습니다: {input_file}")
             continue

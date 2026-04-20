@@ -3,6 +3,7 @@ import json
 import time
 import hashlib
 import requests
+import msvcrt
 from datetime import datetime
 from bs4 import BeautifulSoup
 from pathlib import Path
@@ -111,6 +112,16 @@ def save_csv(records):
         for row in reversed(records):
             writer.writerow(row)
 
+def sleep_with_cancel(seconds):
+    """지정된 초만큼 대기하며 'q' 입력 시 중단합니다."""
+    for _ in range(seconds):
+        if msvcrt.kbhit():
+            key = msvcrt.getch().decode('utf-8').lower()
+            if key == 'q':
+                return True
+        time.sleep(1)
+    return False
+
 def main():
     print("========== 🐎 Netkeiba Information 모니터링 봇 시작 ==========")
     print("종료하시려면 터미널 창을 닫거나 키보드에서 [Ctrl + C] 를 누르세요.")
@@ -118,9 +129,10 @@ def main():
     
     while True:
         fetch_and_parse()
-        print("30분 뒤에 다시 확인합니다... (대기 중)\n")
-        # 1800초 = 30분
-        time.sleep(1800)
+        print("1시간 뒤에 다시 확인합니다... (대기 중, 중단하고 메뉴로 돌아가려면 'q' 입력)\n")
+        if sleep_with_cancel(3600):
+            print("\n[안내] 사용자에 의해 모니터링 대기가 중단되었습니다.")
+            break
 
 if __name__ == "__main__":
     main()

@@ -7,3 +7,8 @@ __pycache__/
 venv/
 env/
 .env
+
+# Data and Logs
+**/data/
+**/nodata/
+*.csv

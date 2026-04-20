@@ -25,13 +25,18 @@ def make_race_urls(start_url: str, max_races: int = 18):
         )
     return urls
 
-def save_rows_to_csv(rows: list[dict], filepath: str):
+def save_rows_to_csv(rows: list[dict], filename: str):
     if not rows:
         print("저장할 데이터가 없습니다.")
         return
 
+    # WebCrawler/data 폴더 준비
+    data_dir = Path(__file__).resolve().parent / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    filepath = data_dir / filename
+
     fieldnames = list(rows[0].keys())
-    file_exists = os.path.exists(filepath)
+    file_exists = filepath.exists()
 
     with open(filepath, "a", newline="", encoding="utf-8-sig") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -39,7 +44,7 @@ def save_rows_to_csv(rows: list[dict], filepath: str):
             writer.writeheader()
         writer.writerows(rows)
 
-    print(f"CSV 이어쓰기 완료: {filepath} (+{len(rows)} rows 누적)")
+    print(f"CSV 저장 완료: {filepath} (+{len(rows)} rows)")
 
 
 import sys
@@ -47,7 +52,7 @@ if __name__ == "__main__":
     if len(sys.argv) > 1:
         start_url = sys.argv[1]
     else:
-        start_url = "https://race.netkeiba.com/race/result.html?race_id=202606030701"
+        start_url = "https://race.netkeiba.com/race/result.html?race_id=202606030701&rf=race_list"
     
     max_races = 12
 

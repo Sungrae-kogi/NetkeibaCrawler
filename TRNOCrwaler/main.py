@@ -57,9 +57,8 @@ def fetch_html(url: str, session: requests.Session) -> str:
     resp = session.get(url, headers=HEADERS, timeout=15)
     resp.raise_for_status()
 
-    # 일본어 인코딩 보정
-    if not resp.encoding or resp.encoding.lower() in ("iso-8859-1", "latin-1"):
-        resp.encoding = resp.apparent_encoding or "utf-8"
+    # 넷케이바는 EUC-JP 인코딩을 사용하므로 수동 지정
+    resp.encoding = "EUC-JP"
 
     return resp.text
 
@@ -232,6 +231,7 @@ def fetch_and_map(trno: str, session: requests.Session) -> dict:
 def main() -> None:
     project_root = Path(__file__).resolve().parent
     date_suffix = sys.argv[1] if len(sys.argv) > 1 else "unknown"
+    meet_name = date_suffix.split('_')[0] if '_' in date_suffix else "unknown"
     
     in_csv = project_root / "nodata" / f"TRNO_{date_suffix}_list.csv"
     out_csv = project_root / "data" / f"TRNO_result_{date_suffix}.csv"
@@ -243,9 +243,12 @@ def main() -> None:
     with requests.Session() as session:
         for trno in test_list:
             try:
-                rows.append(fetch_and_map(trno, session))
+                row = fetch_and_map(trno, session)
+                new_row = {"MEET": meet_name}
+                new_row.update(row)
+                rows.append(new_row)
             except Exception as e:
-                rows.append({"PRNO": trno, "ERROR": f"{type(e).__name__}: {e}"})
+                rows.append({"MEET": meet_name, "PRNO": trno, "ERROR": f"{type(e).__name__}: {e}"})
             time.sleep(0.5)
 
     save_csv(rows, out_csv)
