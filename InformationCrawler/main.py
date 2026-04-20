@@ -3,6 +3,7 @@ import json
 import time
 import hashlib
 import requests
+import re
 import msvcrt
 from datetime import datetime
 from bs4 import BeautifulSoup
@@ -12,6 +13,7 @@ BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
 CACHE_FILE = DATA_DIR / "seen_cache.json"
 CSV_FILE = DATA_DIR / "extracted_info.csv"
+CANCEL_CSV_FILE = DATA_DIR / "cancel_extracted_info.csv"
 
 URL = "https://race.netkeiba.com/top/information.html?rf=sidemenu"
 HEADERS = {
@@ -88,6 +90,17 @@ def fetch_and_parse():
     if new_records:
         print(f"  -> 🎉 새로운 정보 {len(new_records)}건이 발견되어 저장합니다!")
         save_csv(new_records)
+        
+        # [데이터 분리 추출] 출주 취소인 건만 따로 파싱하여 저장
+        cancel_records = []
+        for rec in new_records:
+            if rec["CATEGORY"] == "出走取消":
+                cancel_records.append(parse_cancel_record(rec))
+                
+        if cancel_records:
+            save_cancel_csv(cancel_records)
+            print(f"     (출주 취소 데이터 {len(cancel_records)}건 파싱 및 분리 저장 완료)")
+            
         save_cache(seen_cache)
         for rec in reversed(new_records):
             print(f"     [{rec['CATEGORY']}] {rec['PLACE']} - {rec['DETAILS']}")
@@ -109,6 +122,58 @@ def save_csv(records):
         
         # 위에서부터 파싱하면 최신 데이터가 먼저 들어옴.
         # 기록은 시간 순서(과거->최신)로 남기기 위해 뒤집어서 저장
+        for row in reversed(records):
+            writer.writerow(row)
+
+def parse_cancel_record(record):
+    """出走取消 타입의 데이터를 정규식으로 분해하여 새 구조로 반환합니다."""
+    out = {
+        "CRAWL_TIME": record["CRAWL_TIME"],
+        "CATEGORY": record["CATEGORY"],
+        "RCDAY": "",
+        "MEET": "",
+        "RCNO": "",
+        "CHULNO": "",
+        "HRNAME": "",
+        "RCDATE": ""
+    }
+    
+    place = record.get("PLACE", "")
+    details = record.get("DETAILS", "")
+    
+    # PLACE 파싱: 예) 土曜阪神6R -> RCDAY=土, MEET=阪神, RCNO=6
+    m_place = re.match(r"^(.)曜(.+?)(\d+)R", place)
+    if m_place:
+        out["RCDAY"] = m_place.group(1)
+        out["MEET"] = m_place.group(2)
+        out["RCNO"] = m_place.group(3)
+        
+    # DETAILS 파싱: 예) 2番 エイコーンドリーム (4/18 12:43) 
+    # -> CHULNO=2, HRNAME=エイコーンドリーム, 날짜추출 후 RCDATE=20260418 생성
+    fixed_details = details.replace('\xa0', ' ')
+    m_details = re.search(r"(\d+)番\s*([^\(]+?)\s*\(\s*(\d+)/(\d+)", fixed_details)
+    if m_details:
+        out["CHULNO"] = m_details.group(1)
+        out["HRNAME"] = m_details.group(2).strip()
+        month = int(m_details.group(3))
+        day = int(m_details.group(4))
+        year = datetime.now().year
+        out["RCDATE"] = f"{year}{month:02d}{day:02d}"
+        
+    return out
+
+def save_cancel_csv(records):
+    """파싱된 出走取消 데이터를 별도의 CSV(cancel_extracted_info.csv)에 누적 저장합니다."""
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    file_exists = CANCEL_CSV_FILE.exists()
+    
+    fieldnames = ["CRAWL_TIME", "CATEGORY", "RCDAY", "MEET", "RCNO", "CHULNO", "HRNAME", "RCDATE"]
+    
+    with open(CANCEL_CSV_FILE, "a", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        if not file_exists:
+            writer.writeheader()
+        
         for row in reversed(records):
             writer.writerow(row)
 

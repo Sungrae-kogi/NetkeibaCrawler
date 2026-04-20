@@ -64,9 +64,11 @@ def run_mode_1(url: str):
     
     print("\n========== [Phase 2] PK (고유번호) 분배 및 저장 중 ==========")
     data_dir = WEB_CRAWLER_DIR / "data"
+    
+    # 💥 수정된 부분: 결과가 data 폴더에 저장되므로, 파일을 찾는 경로도 data 하위로 변경 💥
     csv_files = list(data_dir.glob("race_planning_*.csv"))
     if not csv_files:
-        print(f"[오류] {data_dir} 에서 race_planning CSV 파일을 찾을 수 없습니다.")
+        print(f"[오류] 경로({data_dir}) 내에서 race_planning CSV 파일을 찾을 수 없습니다.")
         return
         
     latest_csv = max(csv_files, key=lambda p: p.stat().st_mtime)
@@ -113,6 +115,7 @@ def main():
             
         # 1, 2번 모드일 때만 URL 입력을 받음
         url = ""
+        
         if mode in ["1", "2"]:
             print("\n[안내] 자동으로 접근하는 것을 막고 보안을 뚫기 위해, 수동 URL 복사가 필요합니다.")
             url = input("시작하실 1경기 웹페이지의 URL 주소를 통째로 복사해서 붙여넣고 엔터를 치세요 (뒤로 가려면 'q' 입력):\n> ").strip()
