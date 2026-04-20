@@ -1,10 +1,27 @@
 import os
 import sys
 import subprocess
+import logging
+from datetime import datetime
 from pathlib import Path
 
 # Paths Setup
 BASE_DIR = Path(__file__).resolve().parent
+LOG_DIR = BASE_DIR / "logs"
+LOG_DIR.mkdir(exist_ok=True)
+date_str = datetime.now().strftime("%Y%m%d")
+LOG_FILE = LOG_DIR / f"{date_str}_Master.log"
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    handlers=[
+        logging.FileHandler(LOG_FILE, encoding='utf-8'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger("Master")
+
 WEB_CRAWLER_DIR = BASE_DIR / "WebCrawler"
 ENTRY_SHEET_DIR = WEB_CRAWLER_DIR / "entry_sheet_2"
 HR_DIR = BASE_DIR / "HRNOCrawler"
@@ -33,42 +50,41 @@ def extract_suffix_from_filename(csv_path: Path, prefix: str) -> str:
     return "unknown"
 
 def run_child_crawlers(date_str: str):
-    print(f"\n========== [Phase 3] 하위 디테일 크롤러 연쇄 가동 (날짜/장소: {date_str}) ==========")
+    logger.info(f"\n========== [Phase 3] 하위 디테일 크롤러 연쇄 가동 (날짜/장소: {date_str}) ==========")
     
     # 1. HRNOCrawler
-    print(f"\n▶ [1/3] HRNOCrawler (말 상세 프로필) 가동 중...")
+    logger.info(f"▶ [1/3] HRNOCrawler (말 상세 프로필) 가동 중...")
     if not (HR_DIR / "main.py").exists():
-        print(f"[경고] {HR_DIR}/main.py 파일을 찾을 수 없어 건너뜁니다.")
+        logger.warning(f"[경고] {HR_DIR}/main.py 파일을 찾을 수 없어 건너뜁니다.")
     else:
         subprocess.run([sys.executable, "main.py", date_str], cwd=HR_DIR)
     
     # 2. JKNOCrawler
-    print(f"\n▶ [2/3] JKNOCrawler (기수 상세 프로필) 가동 중...")
+    logger.info(f"▶ [2/3] JKNOCrawler (기수 상세 프로필) 가동 중...")
     if not (JK_DIR / "main.py").exists():
-        print(f"[경고] {JK_DIR}/main.py 파일을 찾을 수 없어 건너뜁니다.")
+        logger.warning(f"[경고] {JK_DIR}/main.py 파일을 찾을 수 없어 건너뜁니다.")
     else:
         subprocess.run([sys.executable, "main.py", date_str], cwd=JK_DIR)
     
     # 3. TRNOCrwaler
-    print(f"\n▶ [3/3] TRNOCrwaler (조교사 상세 프로필) 가동 중...")
+    logger.info(f"▶ [3/3] TRNOCrwaler (조교사 상세 프로필) 가동 중...")
     if not (TR_DIR / "main.py").exists():
-        print(f"[경고] {TR_DIR}/main.py 파일을 찾을 수 없어 건너뜁니다.")
+        logger.warning(f"[경고] {TR_DIR}/main.py 파일을 찾을 수 없어 건너뜁니다.")
     else:
         subprocess.run([sys.executable, "main.py", date_str], cwd=TR_DIR)
     
-    print("\n========== [완료] 전체 마스터 파이프라인 수집이 종료되었습니다! ==========")
+    logger.info("========== [완료] 전체 마스터 파이프라인 수집이 종료되었습니다! ==========")
 
 def run_mode_1(url: str):
-    print("\n========== [Phase 1] 경기 결과 웹 크롤링 수집 시작 ==========")
+    logger.info("\n========== [Phase 1] 경기 결과 웹 크롤링 수집 시작 ==========")
     subprocess.run([sys.executable, "main.py", url], cwd=WEB_CRAWLER_DIR)
     
-    print("\n========== [Phase 2] PK (고유번호) 분배 및 저장 중 ==========")
+    logger.info("\n========== [Phase 2] PK (고유번호) 분배 및 저장 중 ==========")
     data_dir = WEB_CRAWLER_DIR / "data"
     
-    # 💥 수정된 부분: 결과가 data 폴더에 저장되므로, 파일을 찾는 경로도 data 하위로 변경 💥
     csv_files = list(data_dir.glob("race_planning_*.csv"))
     if not csv_files:
-        print(f"[오류] 경로({data_dir}) 내에서 race_planning CSV 파일을 찾을 수 없습니다.")
+        logger.error(f"[오류] 경로({data_dir}) 내에서 race_planning CSV 파일을 찾을 수 없습니다.")
         return
         
     latest_csv = max(csv_files, key=lambda p: p.stat().st_mtime)
@@ -78,12 +94,12 @@ def run_mode_1(url: str):
     run_child_crawlers(suffix)
 
 def run_mode_2(url: str):
-    print("\n========== [Phase 1 & 2] 경기 계획 수집 및 자동 PK 분배 시작 ==========")
+    logger.info("\n========== [Phase 1 & 2] 경기 계획 수집 및 자동 PK 분배 시작 ==========")
     subprocess.run([sys.executable, "main.py", url], cwd=ENTRY_SHEET_DIR)
     
     csv_files = list((ENTRY_SHEET_DIR / "data").glob("api_entry_sheet_2_*.csv"))
     if not csv_files:
-        print("[오류] api_entry_sheet_2 CSV 파일을 찾을 수 없습니다.")
+        logger.error("[오류] api_entry_sheet_2 CSV 파일을 찾을 수 없습니다.")
         return
         
     latest_csv = max(csv_files, key=lambda p: p.stat().st_mtime)
@@ -91,12 +107,10 @@ def run_mode_2(url: str):
     run_child_crawlers(suffix)
 
 def run_mode_3():
-    print("\n========== 실시간 변경 정보 모니터링 (Information) 가동 ==========")
+    logger.info("\n========== 실시간 변경 정보 모니터링 (Information) 가동 ==========")
     if not (INFO_DIR / "main.py").exists():
-        print(f"[경고] {INFO_DIR}/main.py 파일을 찾을 수 없습니다.")
+        logger.warning(f"[경고] {INFO_DIR}/main.py 파일을 찾을 수 없습니다.")
     else:
-        # 이봇은 무한 루프로 동작하므로 제어권이 이쪽으로 넘어갑니다.
-        # Ctrl+C로 종료하면 다시 메인 메뉴로 돌아오게 됩니다.
         subprocess.run([sys.executable, "main.py"], cwd=INFO_DIR)
 
 def main():
@@ -134,13 +148,17 @@ def main():
                 run_mode_2(url)
             elif mode == "3":
                 run_mode_3()
+            
+            logger.info("\n[성공] 요청하신 파이프라인 작업이 정상적으로 종료되었습니다.")
         except KeyboardInterrupt:
-            print("\n[안내] 사용자에 의해 중단되었습니다. 메인 메뉴로 돌아갑니다.")
+            logger.warning("\n[중단] 사용자에 의해 작업이 중지되었습니다. 메인 메뉴로 돌아갑니다.")
         except Exception as e:
-            print(f"\n[오류] 작업 중 에러가 발생했습니다: {e}")
+            logger.error(f"\n[장애] 작업 중 예상치 못한 오류가 발생했습니다: {e}")
+            logger.info("상세 로그를 확인하거나 네트워크 상태를 점검해 주세요.")
         
-        print("\n[안내] 파이프라인 작업이 완료되었습니다. 메인 메뉴로 돌아갑니다.")
-        print("-" * 60)
+        print("\n" + "-" * 60)
+        print("메뉴로 돌아가려면 엔터를 누르세요...")
+        input()
 
 if __name__ == "__main__":
     main()

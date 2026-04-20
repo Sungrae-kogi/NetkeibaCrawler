@@ -4,6 +4,8 @@ from __future__ import annotations
 import csv
 import time
 import random
+import logging
+from datetime import datetime
 from pathlib import Path
 
 import requests
@@ -22,9 +24,41 @@ HEADERS = {
     "User-Agent": "Mozilla/5.0 (compatible; netkeiba-jockey-crawler/1.0)"
 }
 
+# 로깅 설정
+BASE_DIR = Path(__file__).resolve().parent
+LOG_DIR = BASE_DIR.parent / "logs"
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+date_str = datetime.now().strftime("%Y%m%d")
+LOG_FILE = LOG_DIR / f"{date_str}_JKNO.log"
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    handlers=[
+        logging.FileHandler(LOG_FILE, encoding='utf-8'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger("JKNO")
+
+
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+
+# 재시도 전략 설정
+retry_strategy = Retry(
+    total=3,
+    backoff_factor=1,
+    status_forcelist=[429, 500, 502, 503, 504],
+    allowed_methods=["GET"]
+)
+adapter = HTTPAdapter(max_retries=retry_strategy)
+http = requests.Session()
+http.mount("https://", adapter)
+http.mount("http://", adapter)
 
 def fetch_url(url: str, timeout: int = 20) -> str:
-    r = requests.get(url, headers=HEADERS, timeout=timeout)
+    r = http.get(url, headers=HEADERS, timeout=timeout)
     r.raise_for_status()
     r.encoding = "EUC-JP"
     return r.text
@@ -88,7 +122,7 @@ def load_unique_jkno_csv(path: str = "data/JKNO.csv") -> list[str]:
             seen.add(x)
             uniq.append(x)
 
-    print(f"[INFO] loaded JKNO count={len(uniq)} from {p.as_posix()}")
+    logger.info(f"[INFO] loaded JKNO count={len(uniq)} from {p.as_posix()}")
     return uniq
 
 
@@ -117,25 +151,24 @@ def main():
     jknos = load_unique_jkno_csv(str(in_csv))
     rows: list[dict[str, str]] = []
     
+    total = len(jknos)
     for i, jkno in enumerate(jknos, start=1):
-        print(f"[{i}/{len(jknos)}] jkno={jkno}")
-
         try:
             html_profile = fetch_jockey_page(jkno)
             html_result = fetch_jockey_result_page(jkno)
 
-            debug = (i <= 2)
-            row = parse_jockey_profile(html_profile, jkno=jkno, debug=debug)
+            row = parse_jockey_profile(html_profile, jkno=jkno, debug=False)
 
             # ✅ result.html 매핑 값 추가
-            stat = parse_jockey_result_stats(html_result, jkno=jkno, debug=debug)
+            stat = parse_jockey_result_stats(html_result, jkno=jkno, debug=False)
             row.update(stat)
             row["MEET"] = meet_name
 
             rows.append(row)
+            logger.info(f"[{i}/{total}] OK JKNO={jkno}")
 
         except Exception as e:
-            print(f"[ERROR] jkno={jkno} err={e}")
+            logger.error(f"[{i}/{total}] FAIL JKNO={jkno} err={e}")
 
         time.sleep(random.uniform(0.7, 1.5))
 

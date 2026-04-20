@@ -1,9 +1,28 @@
 import os
 import re
 import csv
+import logging
+from datetime import datetime
 from pathlib import Path
 
 from parser import parse_race_page_rows
+
+# 로깅 설정
+BASE_DIR = Path(__file__).resolve().parent
+LOG_DIR = BASE_DIR.parent / "logs"
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+date_str = datetime.now().strftime("%Y%m%d")
+LOG_FILE = LOG_DIR / f"{date_str}_WebCrawler.log"
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    handlers=[
+        logging.FileHandler(LOG_FILE, encoding='utf-8'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger("WebCrawler")
 
 """
     도쿄 경기의 출전표 및 경기결과 데이터 수집 (마스터 파일 이어쓰기)
@@ -27,7 +46,7 @@ def make_race_urls(start_url: str, max_races: int = 18):
 
 def save_rows_to_csv(rows: list[dict], filename: str):
     if not rows:
-        print("저장할 데이터가 없습니다.")
+        logger.warning("저장할 데이터가 없습니다.")
         return
 
     # WebCrawler/data 폴더 준비
@@ -44,7 +63,7 @@ def save_rows_to_csv(rows: list[dict], filename: str):
             writer.writeheader()
         writer.writerows(rows)
 
-    print(f"CSV 저장 완료: {filepath} (+{len(rows)} rows)")
+    logger.info(f"CSV 저장 완료: {filepath} (+{len(rows)} rows)")
 
 
 import sys
@@ -66,9 +85,9 @@ if __name__ == "__main__":
                 url, raw_cookie=my_premium_cookie
             )
             all_rows.extend(rows)
-            print(f"수집: {url} -> {len(rows)} rows")
+            logger.info(f"수집: {url} -> {len(rows)} rows")
         except Exception as e:
-            print(f"실패: {url} / {e}")
+            logger.error(f"실패: {url} / {e}")
 
     if all_rows:
         first_row = all_rows[0]
@@ -79,4 +98,4 @@ if __name__ == "__main__":
         filename = f"race_planning_{meet_str}_{date_str}.csv"
         save_rows_to_csv(all_rows, filename)
     else:
-        print("[경고] 수집된 데이터가 없습니다.")
+        logger.warning("수집된 데이터가 없습니다.")

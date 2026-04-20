@@ -2,9 +2,28 @@ import csv
 import random
 import asyncio
 import aiohttp
+import logging
+from datetime import datetime
 from pathlib import Path
 
 from parser import build_horse_url, parse_horse_page
+
+# 로깅 설정
+BASE_DIR = Path(__file__).resolve().parent
+LOG_DIR = BASE_DIR.parent / "logs"
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+date_str = datetime.now().strftime("%Y%m%d")
+LOG_FILE = LOG_DIR / f"{date_str}_HRNO.log"
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    handlers=[
+        logging.FileHandler(LOG_FILE, encoding='utf-8'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger("HRNO")
 
 def get_completed_hrnos(out_path: Path) -> set[str]:
     if not out_path.exists():
@@ -66,10 +85,10 @@ async def fetch_single_horse(
                     if not file_exists:
                         writer.writeheader()
                     writer.writerow(new_data)
-            print(f"[{idx}/{total}] OK HRNO={hrno}")
+            logger.info(f"[{idx}/{total}] OK HRNO={hrno}")
 
         except Exception as e:
-            print(f"[{idx}/{total}] FAIL HRNO={hrno} / {e}")
+            logger.error(f"[{idx}/{total}] FAIL HRNO={hrno} / {e}")
 
 async def run_async(
         hrno_list: list[str],
@@ -93,14 +112,14 @@ async def run_async(
 
 def save_results_to_csv(results: list[dict], out_path: Path):
     if not results:
-        print("[WARN] 저장할 데이터가 없습니다.")
+        logger.warning("[WARN] 저장할 데이터가 없습니다.")
         return
     fieldnames = list(results[0].keys())
     with open(out_path, "w", encoding="utf-8-sig", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(results)
-    print(f"[OK] CSV 저장 완료: {out_path}")
+    logger.info(f"[OK] CSV 저장 완료: {out_path}")
 
 import sys
 
@@ -122,12 +141,12 @@ if __name__ == "__main__":
     completed_set = get_completed_hrnos(out_csv)
     target_hrnos = [h for h in all_hrnos if h not in completed_set]
 
-    print(f"전체 명단: {len(all_hrnos)} 건")
-    print(f"이미 완료: {len(completed_set)} 건")
-    print(f"진행 대상: {len(target_hrnos)} 건")
+    logger.info(f"전체 명단: {len(all_hrnos)} 건")
+    logger.info(f"이미 완료: {len(completed_set)} 건")
+    logger.info(f"진행 대상: {len(target_hrnos)} 건")
 
     if not target_hrnos:
-        print("🎉 모든 크롤링이 이미 완료되었습니다!")
+        logger.info("🎉 모든 크롤링이 이미 완료되었습니다!")
     else:
         asyncio.run(run_async(target_hrnos, out_csv, meet_name))
-        print(f"🎉 크롤링 종료! 결과 파일: {out_csv}")
+        logger.info(f"🎉 크롤링 종료! 결과 파일: {out_csv}")

@@ -4,6 +4,8 @@ from __future__ import annotations
 import re
 import sys
 import time
+import logging
+from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
@@ -22,6 +24,23 @@ HEADERS = {
 }
 
 BASE_TRAINER_RESULT_URL = "https://db.netkeiba.com/trainer/result.html?id={trno}"
+
+# 로깅 설정
+BASE_DIR = Path(__file__).resolve().parent
+LOG_DIR = BASE_DIR.parent / "logs"
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+date_str = datetime.now().strftime("%Y%m%d")
+LOG_FILE = LOG_DIR / f"{date_str}_TRNO.log"
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    handlers=[
+        logging.FileHandler(LOG_FILE, encoding='utf-8'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger("TRNO")
 
 
 # ----------------------------
@@ -53,8 +72,23 @@ def save_csv(rows: list[dict], out_path: Path) -> None:
 # ----------------------------
 # Network
 # ----------------------------
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+
+# 재시도 전략 설정
+retry_strategy = Retry(
+    total=3,
+    backoff_factor=1,
+    status_forcelist=[429, 500, 502, 503, 504],
+    allowed_methods=["GET"]
+)
+adapter = HTTPAdapter(max_retries=retry_strategy)
+http_session = requests.Session()
+http_session.mount("https://", adapter)
+http_session.mount("http://", adapter)
+
 def fetch_html(url: str, session: requests.Session) -> str:
-    resp = session.get(url, headers=HEADERS, timeout=15)
+    resp = http_session.get(url, headers=HEADERS, timeout=15)
     resp.raise_for_status()
 
     # 넷케이바는 EUC-JP 인코딩을 사용하므로 수동 지정
@@ -240,19 +274,22 @@ def main() -> None:
     test_list = trno_list
 
     rows: list[dict] = []
+    total = len(test_list)
     with requests.Session() as session:
-        for trno in test_list:
+        for i, trno in enumerate(test_list, start=1):
             try:
                 row = fetch_and_map(trno, session)
                 new_row = {"MEET": meet_name}
                 new_row.update(row)
                 rows.append(new_row)
+                logger.info(f"[{i}/{total}] OK TRNO={trno}")
             except Exception as e:
                 rows.append({"MEET": meet_name, "PRNO": trno, "ERROR": f"{type(e).__name__}: {e}"})
+                logger.error(f"[{i}/{total}] FAIL TRNO={trno} / {e}")
             time.sleep(0.5)
 
     save_csv(rows, out_csv)
-    print(f"Saved {len(rows)} rows -> {out_csv}")
+    logger.info(f"Saved {len(rows)} rows -> {out_csv}")
 
 
 if __name__ == "__main__":

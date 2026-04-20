@@ -131,6 +131,32 @@ def _parse_prize_to_int(text: str | None) -> int:
 # ==========================================
 # 2. 비동기 통신 함수들
 # ==========================================
+async def fetch_with_retry(
+        session: aiohttp.ClientSession,
+        url: str,
+        params: dict = None,
+        retries: int = 3,
+        backoff: float = 1.0
+) -> str | None:
+    """네트워크 오류 시 재시도 로직을 포함한 비동기 fetch 함수"""
+    for i in range(retries):
+        try:
+            async with session.get(url, params=params, headers=HEADERS, timeout=20) as res:
+                if res.status == 200:
+                    return await res.text(encoding="euc-jp", errors="replace")
+                elif res.status in [429, 500, 502, 503, 504]:
+                    # 서버 에러 시 재시도
+                    pass
+                else:
+                    # 404 등 재시도해도 안되는 에러
+                    return None
+        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+            if i == retries - 1:
+                raise e
+        
+        await asyncio.sleep(backoff * (2 ** i))
+    return None
+
 async def fetch_pedigree_fa_mo(
         hr_no: str,
         session: aiohttp.ClientSession
@@ -143,11 +169,9 @@ async def fetch_pedigree_fa_mo(
     params = {"input": "UTF-8", "output": "json", "id": hr_no}
 
     try:
-        async with session.get(
-                PED_AJAX_URL, params=params, headers=HEADERS, timeout=20
-        ) as res:
-            raw_text = await res.text(encoding="euc-jp", errors="replace")
-            data = json.loads(raw_text)
+        raw_text = await fetch_with_retry(session, PED_AJAX_URL, params=params)
+        if not raw_text: return result
+        data = json.loads(raw_text)
     except Exception as e:
         print(f"[WARN] 혈통 AJAX 에러 HRNO={hr_no} / {e}")
         return result
@@ -200,11 +224,9 @@ async def fetch_results_counts(
     params = {"input": "UTF-8", "output": "json", "id": hr_no}
 
     try:
-        async with session.get(
-                RESULTS_AJAX_URL, params=params, headers=HEADERS, timeout=20
-        ) as res:
-            raw_text = await res.text(encoding="euc-jp", errors="replace")
-            data = json.loads(raw_text)
+        raw_text = await fetch_with_retry(session, RESULTS_AJAX_URL, params=params)
+        if not raw_text: return result
+        data = json.loads(raw_text)
     except Exception as e:
         print(f"[WARN] 성적 AJAX 에러 HRNO={hr_no} / {e}")
         return result
@@ -316,8 +338,8 @@ async def parse_horse_page(
         "CHAKSUNY": None, "CHAKSUN_6M": None,
     }
 
-    async with session.get(url, headers=HEADERS, timeout=20) as res:
-        html = await res.text(encoding="euc-jp", errors="replace")
+    html = await fetch_with_retry(session, url)
+    if not html: return out
 
     soup = BeautifulSoup(html, "lxml")
 

@@ -1,5 +1,24 @@
 import csv
+import logging
+from datetime import datetime
 from pathlib import Path
+
+# 로깅 설정
+BASE_DIR = Path(__file__).resolve().parent
+LOG_DIR = BASE_DIR.parent / "logs"
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+date_str = datetime.now().strftime("%Y%m%d")
+LOG_FILE = LOG_DIR / f"{date_str}_WebCrawler.log"
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    handlers=[
+        logging.FileHandler(LOG_FILE, encoding='utf-8'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger("WebCrawler_Dispatcher")
 
 
 def extract_and_save_ids(input_files):
@@ -18,7 +37,7 @@ def extract_and_save_ids(input_files):
             file_path = Path(__file__).resolve().parent / "data" / input_file
             
         if not file_path.exists():
-            print(f"▶ 파일이 없습니다: {input_file}")
+            logger.warning(f"▶ 파일이 없습니다: {input_file}")
             continue
             
         name = file_path.stem
@@ -52,7 +71,7 @@ def extract_and_save_ids(input_files):
                 for item in sorted(data_sets[key]):
                     writer.writerow([item])
 
-        print(
+        logger.info(
             f"분배 완료: "
             f"HRNO({len(data_sets['HRNO'])}건), "
             f"JKNO({len(data_sets['JKNO'])}건), "

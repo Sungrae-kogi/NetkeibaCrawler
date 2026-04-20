@@ -254,9 +254,25 @@ def parse_premium_lap_summary(soup: BeautifulSoup) -> dict:
     return lap_data
 
 
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+
 def parse_race_page_rows(url: str, raw_cookie: str = "") -> list[dict]:
     cookie_dict = parse_cookie_string(raw_cookie)
-    res = requests.get(url, headers=HEADERS, cookies=cookie_dict, timeout=15)
+    
+    # 재시도 전략 설정
+    retry_strategy = Retry(
+        total=3,
+        backoff_factor=1,
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["GET"]
+    )
+    adapter = HTTPAdapter(max_retries=retry_strategy)
+    http = requests.Session()
+    http.mount("https://", adapter)
+    http.mount("http://", adapter)
+    
+    res = http.get(url, headers=HEADERS, cookies=cookie_dict, timeout=15)
     res.encoding = "EUC-JP"
     soup = BeautifulSoup(res.text, "lxml")
 

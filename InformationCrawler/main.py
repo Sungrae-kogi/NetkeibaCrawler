@@ -5,21 +5,50 @@ import hashlib
 import requests
 import re
 import msvcrt
+import logging
 from datetime import datetime
 from bs4 import BeautifulSoup
 from pathlib import Path
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
+LOG_DIR = BASE_DIR.parent / "logs"
 CACHE_FILE = DATA_DIR / "seen_cache.json"
 CSV_FILE = DATA_DIR / "extracted_info.csv"
 CANCEL_CSV_FILE = DATA_DIR / "cancel_extracted_info.csv"
 
+date_str = datetime.now().strftime("%Y%m%d")
+LOG_FILE = LOG_DIR / f"{date_str}_Information.log"
+
+# 로깅 설정
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    handlers=[
+        logging.FileHandler(LOG_FILE, encoding='utf-8'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger("Information")
 URL = "https://race.netkeiba.com/top/information.html?rf=sidemenu"
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko)"
 }
 
+# 재시도 전략 설정
+retry_strategy = Retry(
+    total=3,
+    backoff_factor=1,
+    status_forcelist=[429, 500, 502, 503, 504],
+    allowed_methods=["GET"]
+)
+adapter = HTTPAdapter(max_retries=retry_strategy)
+http = requests.Session()
+http.mount("https://", adapter)
+http.mount("http://", adapter)
 def load_cache():
     """기존 파싱된 정보의 해시값 목록을 불러옵니다."""
     if CACHE_FILE.exists():
@@ -38,15 +67,14 @@ def generate_hash(text):
     return hashlib.md5(text.encode('utf-8')).hexdigest()
 
 def fetch_and_parse():
-    now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    print(f"[{now_str}] 넷케이바 Information 갱신 내역 확인 중...")
+    logger.info("넷케이바 Information 갱신 내역 확인 중...")
     try:
-        r = requests.get(URL, headers=HEADERS, timeout=15)
+        r = http.get(URL, headers=HEADERS, timeout=15)
         # 넷케이바 인코딩 보정
         r.encoding = "EUC-JP"
         r.raise_for_status()
     except Exception as e:
-        print(f"[오류] 페이지 구조를 가져오는데 실패했습니다: {e}")
+        logger.error(f"페이지 구조를 가져오는데 실패했습니다 (재시도 후 최종 실패): {e}")
         return
 
     soup = BeautifulSoup(r.text, "lxml")
@@ -80,7 +108,7 @@ def fetch_and_parse():
         if item_hash not in seen_cache:
             seen_cache.add(item_hash)
             new_records.append({
-                "CRAWL_TIME": now_str,
+                "CRAWL_TIME": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                 "CATEGORY": category,
                 "PLACE": place,
                 "DETAILS": details,
@@ -88,24 +116,24 @@ def fetch_and_parse():
             })
             
     if new_records:
-        print(f"  -> 🎉 새로운 정보 {len(new_records)}건이 발견되어 저장합니다!")
+        logger.info(f"🎉 새로운 정보 {len(new_records)}건이 발견되어 저장합니다!")
         save_csv(new_records)
         
         # [데이터 분리 추출] 출주 취소인 건만 따로 파싱하여 저장
         cancel_records = []
         for rec in new_records:
-            if rec["CATEGORY"] == "出走取消":
+            if rec["CATEGORY"] == "出走취소" or rec["CATEGORY"] == "出走取消":
                 cancel_records.append(parse_cancel_record(rec))
                 
         if cancel_records:
             save_cancel_csv(cancel_records)
-            print(f"     (출주 취소 데이터 {len(cancel_records)}건 파싱 및 분리 저장 완료)")
+            logger.info(f"     (출주 취소 데이터 {len(cancel_records)}건 파싱 및 분리 저장 완료)")
             
         save_cache(seen_cache)
         for rec in reversed(new_records):
-            print(f"     [{rec['CATEGORY']}] {rec['PLACE']} - {rec['DETAILS']}")
+            logger.info(f"     [{rec['CATEGORY']}] {rec['PLACE']} - {rec['DETAILS']}")
     else:
-        print("  -> 새로운 업데이트가 없습니다.")
+        logger.info("새로운 업데이트가 없습니다.")
 
 def save_csv(records):
     """새로 감지된 정보들을 CSV에 누적(Append)하여 저장합니다."""
@@ -188,15 +216,23 @@ def sleep_with_cancel(seconds):
     return False
 
 def main():
-    print("========== 🐎 Netkeiba Information 모니터링 봇 시작 ==========")
-    print("종료하시려면 터미널 창을 닫거나 키보드에서 [Ctrl + C] 를 누르세요.")
-    print("==============================================================\n")
+    logger.info("==============================================================")
+    logger.info("🐎 Netkeiba Information 모니터링 봇 시작")
+    logger.info("종료하시려면 터미널 창을 닫거나 키보드에서 [Ctrl + C] 를 누르세요.")
+    logger.info("==============================================================\n")
     
     while True:
-        fetch_and_parse()
-        print("1시간 뒤에 다시 확인합니다... (대기 중, 중단하고 메뉴로 돌아가려면 'q' 입력)\n")
+        try:
+            fetch_and_parse()
+        except Exception as e:
+            logger.error(f"예기치 못한 시스템 오류 발생: {e}")
+            logger.info("10초 후 재시도합니다...")
+            time.sleep(10)
+            continue
+
+        logger.info("1시간 뒤에 다시 확인합니다... (대기 중, 중단하고 메뉴로 돌아가려면 'q' 입력)\n")
         if sleep_with_cancel(3600):
-            print("\n[안내] 사용자에 의해 모니터링 대기가 중단되었습니다.")
+            logger.info("\n[안내] 사용자에 의해 모니터링 대기가 중단되었습니다.")
             break
 
 if __name__ == "__main__":
