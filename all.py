@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 import subprocess
 import logging
 from datetime import datetime
@@ -49,31 +50,62 @@ def extract_suffix_from_filename(csv_path: Path, prefix: str) -> str:
         return stem[len(prefix):]
     return "unknown"
 
-def run_child_crawlers(date_str: str):
-    logger.info(f"\n========== [Phase 3] 하위 디테일 크롤러 연쇄 가동 (날짜/장소: {date_str}) ==========")
+def run_child_crawlers(date_str: str, max_retries: int = 3):
+    logger.info(f"\n========== [Phase 3] 하위 디테일 크롤러 연쇄 가동 (Auto-Healing 모드 시작, 날짜/장소: {date_str}) ==========")
     
-    # 1. HRNOCrawler
-    logger.info(f"▶ [1/3] HRNOCrawler (말 상세 프로필) 가동 중...")
-    if not (HR_DIR / "main.py").exists():
-        logger.warning(f"[경고] {HR_DIR}/main.py 파일을 찾을 수 없어 건너뜁니다.")
-    else:
-        subprocess.run([sys.executable, "main.py", date_str], cwd=HR_DIR)
-    
-    # 2. JKNOCrawler
-    logger.info(f"▶ [2/3] JKNOCrawler (기수 상세 프로필) 가동 중...")
-    if not (JK_DIR / "main.py").exists():
-        logger.warning(f"[경고] {JK_DIR}/main.py 파일을 찾을 수 없어 건너뜁니다.")
-    else:
-        subprocess.run([sys.executable, "main.py", date_str], cwd=JK_DIR)
-    
-    # 3. TRNOCrwaler
-    logger.info(f"▶ [3/3] TRNOCrwaler (조교사 상세 프로필) 가동 중...")
-    if not (TR_DIR / "main.py").exists():
-        logger.warning(f"[경고] {TR_DIR}/main.py 파일을 찾을 수 없어 건너뜁니다.")
-    else:
-        subprocess.run([sys.executable, "main.py", date_str], cwd=TR_DIR)
-    
-    logger.info("========== [완료] 전체 마스터 파이프라인 수집이 종료되었습니다! ==========")
+    for attempt in range(1, max_retries + 1):
+        if attempt > 1:
+            logger.info(f"\n========== [Phase 3 재시도] 누락 데이터 복구 시도 ({attempt}/{max_retries} 회차) ==========")
+            
+        any_failed = False
+        
+        # 1. HRNOCrawler
+        logger.info(f"▶ [1/3] HRNOCrawler (말 상세 프로필) 가동 중...")
+        if not (HR_DIR / "main.py").exists():
+            logger.warning(f"[경고] {HR_DIR}/main.py 파일을 찾을 수 없어 건너뜁니다.")
+        else:
+            res = subprocess.run([sys.executable, "main.py", date_str], cwd=HR_DIR)
+            if res.returncode == 2:
+                any_failed = True
+            elif res.returncode != 0:
+                logger.error(f"[CRITICAL] HRNOCrawler가 예기치 않게 종료되었습니다 (코드: {res.returncode})")
+                raise Exception("HRNOCrawler Crash")
+        
+        # 2. JKNOCrawler
+        logger.info(f"▶ [2/3] JKNOCrawler (기수 상세 프로필) 가동 중...")
+        if not (JK_DIR / "main.py").exists():
+            logger.warning(f"[경고] {JK_DIR}/main.py 파일을 찾을 수 없어 건너뜁니다.")
+        else:
+            res = subprocess.run([sys.executable, "main.py", date_str], cwd=JK_DIR)
+            if res.returncode == 2:
+                any_failed = True
+            elif res.returncode != 0:
+                logger.error(f"[CRITICAL] JKNOCrawler가 예기치 않게 종료되었습니다 (코드: {res.returncode})")
+                raise Exception("JKNOCrawler Crash")
+        
+        # 3. TRNOCrwaler
+        logger.info(f"▶ [3/3] TRNOCrwaler (조교사 상세 프로필) 가동 중...")
+        if not (TR_DIR / "main.py").exists():
+            logger.warning(f"[경고] {TR_DIR}/main.py 파일을 찾을 수 없어 건너뜁니다.")
+        else:
+            res = subprocess.run([sys.executable, "main.py", date_str], cwd=TR_DIR)
+            if res.returncode == 2:
+                any_failed = True
+            elif res.returncode != 0:
+                logger.error(f"[CRITICAL] TRNOCrwaler가 예기치 않게 종료되었습니다 (코드: {res.returncode})")
+                raise Exception("TRNOCrwaler Crash")
+                
+        if not any_failed:
+            logger.info("\n========== [완료] 하위 디테일 크롤러들의 모든 수집이 누락 없이 완료되었습니다! ==========")
+            break
+        else:
+            if attempt < max_retries:
+                logger.warning(f"\n[알림] 위 크롤러 중 누락된 항목이 발생하여 5초 대기 후 {attempt+1}회차 핀셋 재수집을 시도합니다.")
+                time.sleep(5)
+            else:
+                logger.error(f"\n[경고] 최선을 다해 {max_retries}회 반복했으나 일부 항목은 끝내 수집하지 못했습니다. 추후 별도 점검이 필요합니다.")
+                
+    logger.info("========== 전체 마스터 파이프라인 데이터 분배 완료! ==========")
 
 def run_mode_1(url: str):
     logger.info("\n========== [Phase 1] 경기 결과 웹 크롤링 수집 시작 ==========")

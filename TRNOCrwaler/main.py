@@ -63,10 +63,31 @@ def load_trno_list(csv_path: Path) -> list[str]:
     return s.tolist()
 
 
-def save_csv(rows: list[dict], out_path: Path) -> None:
+import csv
+
+def get_completed_trnos(out_path: Path) -> set[str]:
+    if not out_path.exists():
+        return set()
+
+    completed = set()
+    with open(out_path, "r", encoding="utf-8-sig") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            val = row.get("PRNO")
+            if val:
+                completed.add(val.strip())
+    return completed
+
+
+def append_row_to_csv(out_path: Path, row: dict) -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    df = pd.DataFrame(rows)
-    df.to_csv(out_path, index=False, encoding="utf-8-sig")
+    file_exists = out_path.exists()
+    
+    with open(out_path, "a", newline="", encoding="utf-8-sig") as f:
+        writer = csv.DictWriter(f, fieldnames=list(row.keys()))
+        if not file_exists:
+            writer.writeheader()
+        writer.writerow(row)
 
 
 # ----------------------------
@@ -271,25 +292,38 @@ def main() -> None:
     out_csv = project_root / "data" / f"TRNO_result_{date_suffix}.csv"
 
     trno_list = load_trno_list(in_csv)
-    test_list = trno_list
+    completed_set = get_completed_trnos(out_csv)
+    target_trnos = [trno for trno in trno_list if trno not in completed_set]
 
-    rows: list[dict] = []
-    total = len(test_list)
+    logger.info(f"전체 명단: {len(trno_list)} 건")
+    logger.info(f"이미 완료: {len(completed_set)} 건")
+    logger.info(f"진행 대상: {len(target_trnos)} 건")
+
+    if not target_trnos:
+        logger.info("🎉 모든 크롤링이 이미 완료되었습니다!")
+        return
+
+    failed_trnos = []
+    total = len(target_trnos)
     with requests.Session() as session:
-        for i, trno in enumerate(test_list, start=1):
+        for i, trno in enumerate(target_trnos, start=1):
             try:
                 row = fetch_and_map(trno, session)
                 new_row = {"MEET": meet_name}
                 new_row.update(row)
-                rows.append(new_row)
+                
+                append_row_to_csv(out_csv, new_row)
                 logger.info(f"[{i}/{total}] OK TRNO={trno}")
             except Exception as e:
-                rows.append({"MEET": meet_name, "PRNO": trno, "ERROR": f"{type(e).__name__}: {e}"})
                 logger.error(f"[{i}/{total}] FAIL TRNO={trno} / {e}")
+                failed_trnos.append(trno)
             time.sleep(0.5)
 
-    save_csv(rows, out_csv)
-    logger.info(f"Saved {len(rows)} rows -> {out_csv}")
+    if failed_trnos:
+        logger.warning(f"수집 완료되었으나, {len(failed_trnos)}건의 실패가 있었습니다. (결과 파일: {out_csv})")
+        sys.exit(2)
+    else:
+        logger.info(f"🎉 크롤링 종료! 누락 없이 완벽하게 수집되었습니다. 결과 파일: {out_csv}")
 
 
 if __name__ == "__main__":

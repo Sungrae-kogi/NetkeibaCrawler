@@ -126,16 +126,30 @@ def load_unique_jkno_csv(path: str = "data/JKNO.csv") -> list[str]:
     return uniq
 
 
-def write_csv(path: str, rows: list[dict[str, str]]) -> None:
+def get_completed_jknos(out_path: Path) -> set[str]:
+    if not out_path.exists():
+        return set()
+
+    completed = set()
+    with open(out_path, "r", encoding="utf-8-sig") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            val = row.get("JKNO")
+            if val:
+                completed.add(val.strip())
+    return completed
+
+def append_row_to_csv(path: str | Path, row: dict[str, str]) -> None:
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
+    file_exists = p.exists()
 
-    with p.open("w", newline="", encoding="utf-8") as f:
+    with p.open("a", newline="", encoding="utf-8-sig") as f:
         w = csv.DictWriter(f, fieldnames=OUT_COLS)
-        w.writeheader()
-        for row in rows:
-            fixed = {k: ("" if row.get(k) is None else row.get(k, "")) for k in OUT_COLS}
-            w.writerow(fixed)
+        if not file_exists:
+            w.writeheader()
+        fixed = {k: ("" if row.get(k) is None else row.get(k, "")) for k in OUT_COLS}
+        w.writerow(fixed)
 
 
 import sys
@@ -149,10 +163,21 @@ def main():
     out_csv = base_dir / "data" / f"JKNO_result_{date_suffix}.csv"
 
     jknos = load_unique_jkno_csv(str(in_csv))
-    rows: list[dict[str, str]] = []
+    completed_set = get_completed_jknos(out_csv)
+    target_jknos = [jk for jk in jknos if jk not in completed_set]
+
+    logger.info(f"전체 명단: {len(jknos)} 건")
+    logger.info(f"이미 완료: {len(completed_set)} 건")
+    logger.info(f"진행 대상: {len(target_jknos)} 건")
+
+    if not target_jknos:
+        logger.info("🎉 모든 크롤링이 이미 완료되었습니다!")
+        return
+
+    total = len(target_jknos)
+    failed_jknos = []
     
-    total = len(jknos)
-    for i, jkno in enumerate(jknos, start=1):
+    for i, jkno in enumerate(target_jknos, start=1):
         try:
             html_profile = fetch_jockey_page(jkno)
             html_result = fetch_jockey_result_page(jkno)
@@ -164,15 +189,20 @@ def main():
             row.update(stat)
             row["MEET"] = meet_name
 
-            rows.append(row)
+            append_row_to_csv(out_csv, row)
             logger.info(f"[{i}/{total}] OK JKNO={jkno}")
 
         except Exception as e:
             logger.error(f"[{i}/{total}] FAIL JKNO={jkno} err={e}")
+            failed_jknos.append(jkno)
 
         time.sleep(random.uniform(0.7, 1.5))
 
-    write_csv(str(out_csv), rows)
+    if failed_jknos:
+        logger.warning(f"수집 완료되었으나, {len(failed_jknos)}건의 실패가 있었습니다. (결과 파일: {out_csv})")
+        sys.exit(2)
+    else:
+        logger.info(f"🎉 크롤링 종료! 누락 없이 완벽하게 수집되었습니다. 결과 파일: {out_csv}")
 
 
 if __name__ == "__main__":

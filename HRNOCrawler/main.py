@@ -66,7 +66,8 @@ async def fetch_single_horse(
         sem: asyncio.Semaphore,
         lock: asyncio.Lock,
         out_path: Path,
-        meet_name: str
+        meet_name: str,
+        fail_list: list
 ) -> None:
     async with sem:
         url = build_horse_url(hrno)
@@ -89,26 +90,29 @@ async def fetch_single_horse(
 
         except Exception as e:
             logger.error(f"[{idx}/{total}] FAIL HRNO={hrno} / {e}")
+            fail_list.append(hrno)
 
 async def run_async(
         hrno_list: list[str],
         out_path: Path,
         meet_name: str
-) -> None:
+) -> list[str]:
     total = len(hrno_list)
     sem = asyncio.Semaphore(3)
     lock = asyncio.Lock()
+    fail_list = []
 
     async with aiohttp.ClientSession() as session:
         tasks = []
         for idx, hrno in enumerate(hrno_list, start=1):
             task = asyncio.create_task(
                 fetch_single_horse(
-                    hrno, idx, total, session, sem, lock, out_path, meet_name
+                    hrno, idx, total, session, sem, lock, out_path, meet_name, fail_list
                 )
             )
             tasks.append(task)
         await asyncio.gather(*tasks)
+    return fail_list
 
 def save_results_to_csv(results: list[dict], out_path: Path):
     if not results:
@@ -148,5 +152,9 @@ if __name__ == "__main__":
     if not target_hrnos:
         logger.info("🎉 모든 크롤링이 이미 완료되었습니다!")
     else:
-        asyncio.run(run_async(target_hrnos, out_csv, meet_name))
-        logger.info(f"🎉 크롤링 종료! 결과 파일: {out_csv}")
+        failed_hrnos = asyncio.run(run_async(target_hrnos, out_csv, meet_name))
+        if failed_hrnos:
+            logger.warning(f"수집 완료되었으나, {len(failed_hrnos)}건의 실패가 있었습니다. (결과 파일: {out_csv})")
+            sys.exit(2)  # Partial failure exit code
+        else:
+            logger.info(f"🎉 크롤링 종료! 누락 없이 완벽하게 수집되었습니다. 결과 파일: {out_csv}")
