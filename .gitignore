@@ -13,3 +13,6 @@ env/
 **/nodata/
 *.csv
 /logs/
+
+config.json
+storage_state.json

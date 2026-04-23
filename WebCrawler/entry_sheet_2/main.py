@@ -7,6 +7,10 @@ import requests
 from bs4 import BeautifulSoup
 from parser import parse_api_entry_sheet_2
 
+# 자동 인증 모듈 추가
+sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
+from netkeiba_auth import get_netkeiba_cookies
+
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko)"
 }
@@ -34,20 +38,13 @@ def main():
     data_dir = base_dir / "data"
     data_dir.mkdir(parents=True, exist_ok=True)
 
-    # 프리미엄 쿠키 사용 여부 확인
-    cookies = {}
-    use_premium = input("프리미엄 쿠키를 사용하여 전체 명단을 수집하시겠습니까? (y/n/q:종료): ").strip().lower()
-    if use_premium == 'q':
-        print("사용자 요청으로 프로그램을 종료합니다.")
-        sys.exit(3) # User Quit Code
-    
-    if use_premium == 'y':
-        cookie_val = input("프리미엄 쿠키(raw string)를 입력하세요 (q:종료): ").strip()
-        if cookie_val.lower() == 'q':
-            print("사용자 요청으로 프로그램을 종료합니다.")
-            sys.exit(3) # User Quit Code
-        if cookie_val:
-            cookies = {"Cookie": cookie_val}
+    # 자동 인증 모듈을 통해 쿠키 획득
+    print("🔑 프리미엄 세션 자동 확인 중...")
+    try:
+        cookies = get_netkeiba_cookies()
+    except Exception as e:
+        print(f"⚠️ 세션 확보 실패 (일반 모드로 진행): {e}")
+        cookies = {}
 
     print(f"========== api_entry_sheet_2 수집 시작 (Base ID: {prefix}) ==========")
     

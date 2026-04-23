@@ -14,6 +14,7 @@ BASE_DIR = Path(__file__).resolve().parent
 sys.path.append(str(BASE_DIR))
 from WebCrawler.discovery import discover_races, get_all_target_races
 from WeatherCrawler.main import run_weather_crawl
+from netkeiba_auth import get_netkeiba_cookies
 
 LOG_DIR = BASE_DIR / "logs"
 LOG_DIR.mkdir(exist_ok=True)
@@ -246,6 +247,17 @@ def print_discovery_results(targets):
     print("-" * 50 + "\n")
 
 def main():
+    # 0. 넷케이바 프리미엄 세션 자동 확인
+    print("\n" + "="*60)
+    print("🔑 넷케이바 프리미엄 세션 자동 확인 중...")
+    try:
+        get_netkeiba_cookies()
+        print("✅ 세션 준비 완료!")
+    except Exception as e:
+        print(f"⚠️ 자동 로그인 실패: {e}")
+        print("💡 일반 모드로 진행하거나 설정을 확인해 주세요.")
+    print("="*60 + "\n")
+
     while True:
         print_menu()
         mode = input("선택하실 번호를 입력하세요 (1, 2, 3, 4 또는 q): ").strip().lower()
