@@ -101,10 +101,26 @@ def run_child_crawlers(date_str: str, max_retries: int = 3):
             else:
                 logger.error(f"\n[경고] {max_retries}회 반복했으나 일부 항목은 수집하지 못했습니다.")
 
-def run_mode_1_logic(url: str):
+def run_mode_1_logic(url: str, max_retries: int = 3):
     logger.info(f"\n▶ [Phase 1] 경기 결과 수집 시작: {url}")
-    subprocess.run([sys.executable, "main.py", url], cwd=WEB_CRAWLER_DIR)
     
+    success = False
+    for attempt in range(1, max_retries + 1):
+        if attempt > 1: logger.info(f"--- [Mode 1 재시도] {attempt}/{max_retries} 회차 ---")
+        res = subprocess.run([sys.executable, "main.py", url], cwd=WEB_CRAWLER_DIR)
+        
+        if res.returncode == 0:
+            success = True
+            break
+        elif res.returncode == 3:
+            logger.info("👋 사용자 요청으로 전체 작업을 종료합니다.")
+            sys.exit(0)
+        elif res.returncode == 2:
+            logger.warning(f"⚠️ [Phase 1] 일부 데이터 누락 발생. 재시도를 진행합니다.")
+        else:
+            logger.error(f"❌ [Phase 1] 치명적 오류 발생 (종료코드: {res.returncode})")
+            break
+            
     logger.info("\n▶ [Phase 2] PK (고유번호) 분배 중...")
     data_dir = WEB_CRAWLER_DIR / "data"
     csv_files = list(data_dir.glob("race_planning_*.csv"))
@@ -118,10 +134,26 @@ def run_mode_1_logic(url: str):
     suffix = extract_suffix_from_filename(latest_csv, "race_planning_")
     run_child_crawlers(suffix)
 
-def run_mode_2_logic(url: str):
+def run_mode_2_logic(url: str, max_retries: int = 3):
     logger.info(f"\n▶ [Phase 1 & 2] 경기 계획 수집 및 PK 분배: {url}")
-    subprocess.run([sys.executable, "main.py", url], cwd=ENTRY_SHEET_DIR)
     
+    success = False
+    for attempt in range(1, max_retries + 1):
+        if attempt > 1: logger.info(f"--- [Mode 2 재시도] {attempt}/{max_retries} 회차 ---")
+        res = subprocess.run([sys.executable, "main.py", url], cwd=ENTRY_SHEET_DIR)
+        
+        if res.returncode == 0:
+            success = True
+            break
+        elif res.returncode == 3:
+            logger.info("👋 사용자 요청으로 전체 작업을 종료합니다.")
+            sys.exit(0)
+        elif res.returncode == 2:
+            logger.warning(f"⚠️ [Phase 1] 일부 경주 누락 발생. 재시도를 진행합니다.")
+        else:
+            logger.error(f"❌ [Phase 1] 치명적 오류 발생 (종료코드: {res.returncode})")
+            break
+
     csv_files = list((ENTRY_SHEET_DIR / "data").glob("api_entry_sheet_2_*.csv"))
     if not csv_files:
         logger.error("[오류] api_entry_sheet_2 CSV를 찾을 수 없습니다.")
@@ -163,9 +195,6 @@ def run_mode_1():
 
     logger.info(f"🎯 탐색 성공! 1경기 URL: {target_race['url']}")
     
-    # 해당 날짜의 날씨 수집 연동
-    run_weather_crawl(date_input)
-    
     # 결과 수집 프로세스 가동 (Result Mode)
     run_mode_1_logic(target_race['url'])
 
@@ -178,6 +207,13 @@ def run_mode_2():
         return
 
     print_discovery_results(targets)
+    
+    # 경기 계획이 있는 날짜들을 추출해 날씨(예측) 정보를 선행 수집
+    dates = set(t['date'] for t in targets)
+    for d in dates:
+        logger.info(f"\n▶ 해당일({d}) 날씨 및 마장 상태 예보 수집 중...")
+        run_weather_crawl(d)
+        
     for t in targets:
         run_mode_2_logic(t['url'])
 

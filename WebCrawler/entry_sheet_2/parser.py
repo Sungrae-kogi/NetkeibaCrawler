@@ -16,13 +16,13 @@ def parse_api_entry_sheet_2(soup: BeautifulSoup, url: str) -> List[Dict]:
         "RCDATE": None,
         "RCDAY": None,
         "RCNO": rcno,
-        "ILSU": None, # Null
         "RCDIST": None,
         "DUSU": None,
         "RANK": None,
         "AGECOND": None,
         "STTIME": None,
-        "BUDAM": None,
+        "TRACK_TYPE": None,
+        "DIRECTION": None,
         "RCNAME": None,
         "CHAKSUN1": None,
         "CHAKSUN2": None,
@@ -41,7 +41,7 @@ def parse_api_entry_sheet_2(soup: BeautifulSoup, url: str) -> List[Dict]:
             day = m_date.group(2).zfill(2)
             base_out["RCDAY"] = m_date.group(3)
             if year:
-                base_out["RCDATE"] = int(f"{year}{month}{day}")
+                base_out["RCDATE"] = f"{year}-{month}-{day}"
 
     # Race Name (.RaceName)
     race_name_tag = soup.select_one(".RaceList_Item02 .RaceName")
@@ -56,9 +56,14 @@ def parse_api_entry_sheet_2(soup: BeautifulSoup, url: str) -> List[Dict]:
         if m_time:
             base_out["STTIME"] = m_time.group(1)
             
-        m_track = re.search(r"[ダ芝障](\d+)m", text_data01)
+        m_track = re.search(r"([ダ芝障])(\d+)m", text_data01)
         if m_track:
-            base_out["RCDIST"] = int(m_track.group(1))
+            base_out["TRACK_TYPE"] = m_track.group(1)
+            base_out["RCDIST"] = int(m_track.group(2))
+
+        m_dir = re.search(r"\(([右左直]).*?\)", text_data01)
+        if m_dir:
+            base_out["DIRECTION"] = m_dir.group(1)
 
     # Data02 (.RaceData02)
     data02_tag = soup.select_one(".RaceList_Item02 .RaceData02")
@@ -70,17 +75,64 @@ def parse_api_entry_sheet_2(soup: BeautifulSoup, url: str) -> List[Dict]:
             if m_meet: base_out["MEET"] = m_meet.group(1)
             else: base_out["MEET"] = meet_text.split()[-1] if ' ' in meet_text else meet_text
 
+        # AGECOND (연령 조건)
         if len(spans) >= 4:
-            base_out["AGECOND"] = spans[3].strip()
-        if len(spans) >= 5:
-            base_out["RANK"] = spans[4].strip() if spans[4].strip() else None
+            age_sp = spans[3].strip()
+            # '11頭' 같은 정보가 span[3]에 오는 경우 대비하여 연령 패턴 확인
+            if re.search(r"\d+歳", age_sp):
+                base_out["AGECOND"] = age_sp
+        
+        # AGECOND가 여전히 비어있다면 RCNAME에서 추출 시도 (예: '4歳以上障害OP')
+        if not base_out["AGECOND"] and base_out["RCNAME"]:
+            m_age_name = re.search(r"(\d+歳以上|\d+歳)", base_out["RCNAME"])
+            if m_age_name:
+                base_out["AGECOND"] = m_age_name.group(1)
+
+        # RANK (등급)
+        rank_val = None
+        
+        # 1. 경기명(RCNAME)에서 먼저 클래스 정보 추출 시도
+        # 예: '3歳未勝利' -> '未勝利', '4歳以上1勝クラス' -> '1勝クラス'
+        if base_out["RCNAME"]:
+            # 정규식 확장: 障害, OP, J.G, 클래스 등 포함
+            m_name_rank = re.search(r"((?:[１２３123]?勝|新馬|未勝利)クラス|未勝利|新馬|オープン|G[I]+|障害(?:OP|未勝利|オープン)|J\.G[I]+|OP)", base_out["RCNAME"])
+            if m_name_rank:
+                rank_val = m_name_rank.group(1)
+                # OP -> 오픈으로 표준화
+                if rank_val == "OP": rank_val = "オープン"
+        
+        # 2. 경기명에 없거나 '천황상' 같은 특별 경기명인 경우 아이콘 탐색
+        if not rank_val:
+            grade_icon = soup.select_one(".Icon_GradeType")
+            class_icon = soup.select_one(".Icon_ClassType")
+            if grade_icon:
+                rank_val = grade_icon.get_text(strip=True)
+            elif class_icon:
+                class_text = class_icon.get_text(strip=True)
+                rank_val = f"{class_text}クラス" if "勝" in class_text and "クラス" not in class_text else class_text
+        
+        # 3. 그래도 없으면 metadata spans 검색 (기존 로직 보강)
+        if not rank_val or rank_val == "オープン":
+            rank_keywords = ["未勝利", "新馬", "クラス", "オープン", "GI", "GII", "GIII"]
+            for sp in spans:
+                if any(kw in sp for kw in rank_keywords):
+                    m_sp_rank = re.search(r"((?:[１２３123]?勝|新馬|未勝利)クラス|オープン|G[I]+)", sp)
+                    if m_sp_rank:
+                        rank_val = m_sp_rank.group(1)
+                        break
+            
+            # 최종 Fallback: 여전히 없으면 5번째 span 시도
+            if not rank_val and len(spans) >= 5:
+                rank_val = spans[4].strip()
+
+        base_out["RANK"] = rank_val
             
         for sp in spans:
             m_nhr = re.search(r"(\d+)頭", sp)
             if m_nhr: base_out["DUSU"] = int(m_nhr.group(1))
             
             if "馬齢" in sp or "定量" in sp or "ハンデ" in sp or "別定" in sp:
-                base_out["BUDAM"] = sp.strip()
+                pass
                 
             if "本賞金" in sp or "本賞金：" in sp:
                 cleaned = re.sub(r"^\s*本賞金\s*[:：]\s*", "", sp)
@@ -107,31 +159,7 @@ def parse_api_entry_sheet_2(soup: BeautifulSoup, url: str) -> List[Dict]:
         # Additional fields purely for the horse row
         row_dict["CHULNO"] = None
         row_dict["HRNAME"] = None
-        row_dict["HRNO"] = None
-        row_dict["PRD"] = None
-        row_dict["SEX"] = None
-        row_dict["AGE"] = None
-        row_dict["HR_LAST_AMT"] = None
         row_dict["WGBUDAM"] = None
-        row_dict["RATING"] = None
-        row_dict["JKNAME"] = None
-        row_dict["JKNO"] = None
-        row_dict["TRNAME"] = None
-        row_dict["TRNO"] = None
-        row_dict["OWNAME"] = None
-        row_dict["OWNO"] = None
-        row_dict["PRIZECOND"] = None
-        row_dict["CHAKSUNT"] = None
-        row_dict["CHAKSUNY"] = None
-        row_dict["CHAKSUN_6M"] = None
-        row_dict["ORD1CNTT"] = None
-        row_dict["ORD2CNTT"] = None
-        row_dict["ORD3CNTT"] = None
-        row_dict["RCCNTT"] = None
-        row_dict["ORD1CNTY"] = None
-        row_dict["ORD2CNTY"] = None
-        row_dict["ORD3CNTY"] = None
-        row_dict["RCCNTY"] = None
         
         tds = row.find_all("td", recursive=False)
         if len(tds) < 8:

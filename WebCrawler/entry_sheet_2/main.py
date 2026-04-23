@@ -13,6 +13,7 @@ HEADERS = {
 
 def main():
     base_url_template = "https://race.netkeiba.com/race/shutuba.html?race_id={}"
+    
     if len(sys.argv) > 1:
         start_race_id = sys.argv[1]
     else:
@@ -33,14 +34,31 @@ def main():
     data_dir = base_dir / "data"
     data_dir.mkdir(parents=True, exist_ok=True)
 
+    # 프리미엄 쿠키 사용 여부 확인
+    cookies = {}
+    use_premium = input("프리미엄 쿠키를 사용하여 전체 명단을 수집하시겠습니까? (y/n/q:종료): ").strip().lower()
+    if use_premium == 'q':
+        print("사용자 요청으로 프로그램을 종료합니다.")
+        sys.exit(3) # User Quit Code
+    
+    if use_premium == 'y':
+        cookie_val = input("프리미엄 쿠키(raw string)를 입력하세요 (q:종료): ").strip()
+        if cookie_val.lower() == 'q':
+            print("사용자 요청으로 프로그램을 종료합니다.")
+            sys.exit(3) # User Quit Code
+        if cookie_val:
+            cookies = {"Cookie": cookie_val}
+
     print(f"========== api_entry_sheet_2 수집 시작 (Base ID: {prefix}) ==========")
+    
+    any_failed = False
     for i in range(1, 13):
         race_id = f"{prefix}{i:02d}"
         url = base_url_template.format(race_id)
         
         print(f"[{i:02d}/12] 요청 중: {url}")
         try:
-            r = requests.get(url, headers=HEADERS, timeout=15)
+            r = requests.get(url, headers=HEADERS, cookies=cookies, timeout=15)
             r.encoding = "EUC-JP"
             r.raise_for_status()
             
@@ -50,18 +68,18 @@ def main():
                 break
                 
             entries = parse_api_entry_sheet_2(soup, url)
+            if not entries:
+                print(f"  -> 경고: {race_id}에서 데이터를 파싱하지 못했습니다.")
+                any_failed = True
+                continue
+
             all_entries.extend(entries)
-            race_name = entries[0]['RCNAME'] if entries else '알수없는경기'
+            race_name = entries[0]['RCNAME']
             print(f"  -> 수집 성공: {race_name} (출전마 {len(entries)}마리 추가됨)")
 
-        except requests.exceptions.HTTPError as e:
-            if r.status_code == 404:
-                print(f"  -> 경기 {i}를 찾을 수 없습니다(404). 순회 종료.")
-                break
-            else:
-                print(f"  -> HTTP 에러: {e}")
         except Exception as e:
-            print(f"  -> 에러 발생: {e}")
+            print(f"  -> 에러 발생 ({race_id}): {e}")
+            any_failed = True
             
         time.sleep(random.uniform(0.7, 1.5))
 
@@ -69,34 +87,32 @@ def main():
     if all_entries:
         # User DDL에 맞춘 Column 순서
         fieldnames = [
-            "MEET", "RCDATE", "RCDAY", "RCNO", "CHULNO", "HRNAME", "HRNO", "PRD",
-            "SEX", "AGE", "HR_LAST_AMT", "WGBUDAM", "RATING", "JKNAME", "JKNO",
-            "TRNAME", "TRNO", "OWNAME", "OWNO", "ILSU", "RCDIST", "DUSU",
-            "RANK", "PRIZECOND", "AGECOND", "STTIME", "BUDAM", "RCNAME", "CHAKSUN1",
-            "CHAKSUN2", "CHAKSUN3", "CHAKSUN4", "CHAKSUN5", "CHAKSUNT", "CHAKSUNY",
-            "CHAKSUN_6M", "ORD1CNTT", "ORD2CNTT", "ORD3CNTT", "RCCNTT", "ORD1CNTY",
-            "ORD2CNTY", "ORD3CNTY", "RCCNTY"
+            "MEET", "RCDATE", "RCDAY", "RCNO", "CHULNO", "HRNAME", "HRNO",
+            "SEX", "AGE", "WGBUDAM", "JKNAME", "JKNO",
+            "TRNAME", "TRNO", "TRACK_TYPE", "DIRECTION", "RCDIST", "DUSU",
+            "RANK", "AGECOND", "STTIME", "RCNAME", "CHAKSUN1",
+            "CHAKSUN2", "CHAKSUN3", "CHAKSUN4", "CHAKSUN5"
         ]
-        # 덤프 파일명 결정
-        first_row = all_entries[0]
-        date_str = str(first_row.get("RCDATE") or "unknown").replace("-", "").replace("/", "").strip()
-        meet_str = str(first_row.get("MEET") or "unknown").strip()
-        out_csv = data_dir / f"api_entry_sheet_2_{meet_str}_{date_str}.csv"
         
-        with open(out_csv, "w", newline="", encoding="utf-8-sig") as f:
+        first_row = all_entries[0]
+        final_date = str(first_row.get("RCDATE") or "unknown").replace("-", "").replace("/", "").strip()
+        final_meet = str(first_row.get("MEET") or "unknown").strip()
+        final_out_csv = data_dir / f"api_entry_sheet_2_{final_meet}_{final_date}.csv"
+
+        # 항상 덮어쓰기 (사용자 요청)
+        with open(final_out_csv, "w", newline="", encoding="utf-8-sig") as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
             writer.writeheader()
             writer.writerows(all_entries)
-        print(f"\n[완료] 결과 저장: {out_csv} (총 {len(all_entries)}줄의 출전마 행이 생성됨)")
+        print(f"\n[완료] 결과 저장(Overwrite): {final_out_csv} (총 {len(all_entries)}줄)")
 
-        # PK 추출 및 분배 저장 로직 추가
+        # PK 추출 및 분배 저장 로직
         pks = {"HRNO": set(), "JKNO": set(), "TRNO": set()}
         for row in all_entries:
             if row.get("HRNO"): pks["HRNO"].add(row["HRNO"])
             if row.get("JKNO"): pks["JKNO"].add(row["JKNO"])
             if row.get("TRNO"): pks["TRNO"].add(row["TRNO"])
             
-        # PycharmProjects 루트 디렉토리
         root_dir = base_dir.parent.parent 
         targets = {
             "HRNO": root_dir / "HRNOCrawler" / "nodata",
@@ -106,16 +122,19 @@ def main():
         
         for key, folder_path in targets.items():
             folder_path.mkdir(parents=True, exist_ok=True)
-            out_file = folder_path / f"{key}_{meet_str}_{date_str}_list.csv"
+            out_file = folder_path / f"{key}_{final_meet}_{final_date}_list.csv"
             with open(out_file, "w", newline="", encoding="utf-8-sig") as f:
                 writer = csv.writer(f)
                 writer.writerow([key])
                 for item in sorted(pks[key]):
                     writer.writerow([item])
                     
-        print(f"[완료] PK 분배 저장: HRNO({len(pks['HRNO'])}), JKNO({len(pks['JKNO'])}), TRNO({len(pks['TRNO'])}) [nodata 폴더]")
+        print(f"[완료] PK 분배 저장: HRNO({len(pks['HRNO'])}), JKNO({len(pks['JKNO'])}), TRNO({len(pks['TRNO'])})")
     else:
         print("[경고] 수집된 데이터가 없습니다.")
+
+    if any_failed:
+        sys.exit(2)
 
 if __name__ == "__main__":
     main()
