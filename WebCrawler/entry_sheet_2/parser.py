@@ -157,6 +157,7 @@ def parse_api_entry_sheet_2(soup: BeautifulSoup, url: str) -> List[Dict]:
         row_dict = base_out.copy()
         
         # Additional fields purely for the horse row
+        row_dict["WAKU"] = None
         row_dict["CHULNO"] = None
         row_dict["HRNAME"] = None
         row_dict["WGBUDAM"] = None
@@ -165,6 +166,11 @@ def parse_api_entry_sheet_2(soup: BeautifulSoup, url: str) -> List[Dict]:
         if len(tds) < 8:
             continue
             
+        # WAKU (枠番)
+        waku_text = tds[0].get_text(strip=True)
+        if waku_text.isdigit():
+            row_dict["WAKU"] = int(waku_text)
+
         # CHULNO
         chulno_text = tds[1].get_text(strip=True)
         if chulno_text.isdigit():

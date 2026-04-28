@@ -15,4 +15,5 @@ env/
 /logs/
 
 config.json
+db_config.json
 storage_state.json

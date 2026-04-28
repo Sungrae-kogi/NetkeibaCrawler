@@ -37,6 +37,7 @@ HR_DIR = BASE_DIR / "HRNOCrawler"
 JK_DIR = BASE_DIR / "JKNOCrawler"
 TR_DIR = BASE_DIR / "TRNOCrwaler"
 INFO_DIR = BASE_DIR / "InformationCrawler"
+DB_DIR = BASE_DIR / "DBIntegration"
 
 # 경기장 한글-일문 매핑 사전
 VENUE_MAP = {
@@ -55,6 +56,10 @@ def print_menu():
     print("  2. 이번 주 경기 계획 수집 (Automatic Discovery)")
     print("  3. 실시간 변경 정보 모니터링 (Information)")
     print("  4. 날씨 및 바장 정보 즉시 수집 (Weather Only)")
+    print("  5. 수집된 출마표 CSV 데이터를 DB에 업로드 (MariaDB)")
+    print("  6. DB 내 임시 테이블 데이터를 API 테이블로 이관 (JOIN)")
+    print("  7. 수집된 [과거 경기 결과] CSV를 DB에 업로드 (DELETE & INSERT)")
+    print("  8. [과거 경기 결과] 임시 테이블 데이터를 API 테이블로 이관")
     print("=" * 60)
     print("  q. 종료 (Quit)")
     print("=" * 60)
@@ -238,6 +243,76 @@ def run_mode_4():
         run_weather_crawl(d)
     logger.info("========== 날씨 수집 작업이 종료되었습니다. ==========")
 
+def run_mode_5():
+    """5번 모드: CSV 데이터를 MariaDB에 업로드"""
+    logger.info("\n========== [Phase 4] 수집된 CSV 데이터 DB 업로드 시작 ==========")
+    if not (DB_DIR / "mariadb_upsert.py").exists():
+        logger.error(f"[오류] {DB_DIR}/mariadb_upsert.py 파일을 찾을 수 없습니다.")
+    else:
+        subprocess.run([sys.executable, "mariadb_upsert.py"], cwd=DB_DIR)
+        logger.info("\n========== DB 업로드 작업이 완료되었습니다. ==========")
+
+def run_mode_6():
+    """6번 모드: tmp 테이블 데이터를 api 테이블로 이관 (JOIN)"""
+    logger.info("\n========== [Phase 5] DB API 테이블 데이터 이관 시작 ==========")
+    if not (DB_DIR / "mariadb_api_transfer.py").exists():
+        logger.error(f"[오류] {DB_DIR}/mariadb_api_transfer.py 파일을 찾을 수 없습니다.")
+    else:
+        subprocess.run([sys.executable, "mariadb_api_transfer.py"], cwd=DB_DIR)
+        logger.info("\n========== 데이터 이관 작업이 완료되었습니다. ==========")
+
+def run_mode_7():
+    """7번 모드: 과거 경기 결과 CSV 데이터를 DB에 업로드 (DELETE & INSERT)"""
+    print("\n" + "┌" + "─" * 45 + "┐")
+    print("│       [ 과거 경기 결과 DB 업로드 대상 입력 ]       │")
+    print("├" + "─" * 45 + "┤")
+    print("│  1. 날짜 입력 (형식: YYYYMMDD 예: 20260419)  │")
+    print("│  2. 경기장 이름 (도쿄, 나카야마, 한신, 교토) │")
+    print("└" + "─" * 45 + "┘")
+    
+    date_input = input("\n📅 수집된 날짜를 입력하세요: ").strip()
+    if not re.match(r"^\d{8}$", date_input):
+        print("❌ 오류: 날짜 형식이 올바르지 않습니다.")
+        return
+    venue_input = input("🏟️ 경기장 이름을 입력하세요 (도쿄/나카야마/한신/교토): ").strip()
+    if venue_input not in VENUE_MAP:
+        print(f"❌ 오류: '{venue_input}'은(는) 지원하지 않는 경기장입니다.")
+        return
+        
+    japanese_venue = VENUE_MAP[venue_input]
+    logger.info(f"\n========== [Phase 4-Result] 과거 경기 결과 CSV DB 업로드 시작: {date_input} {japanese_venue} ==========")
+    if not (DB_DIR / "mariadb_result_upsert.py").exists():
+        logger.error(f"[오류] mariadb_result_upsert.py 파일을 찾을 수 없습니다.")
+    else:
+        subprocess.run([sys.executable, "mariadb_result_upsert.py", "--date", date_input, "--venue", japanese_venue], cwd=DB_DIR)
+        logger.info("\n========== DB 업로드 작업이 완료되었습니다. ==========")
+
+def run_mode_8():
+    """8번 모드: 과거 경기 결과 임시 테이블 데이터를 API 테이블로 이관"""
+    print("\n" + "┌" + "─" * 45 + "┐")
+    print("│       [ 과거 경기 결과 API 이관 대상 입력 ]        │")
+    print("├" + "─" * 45 + "┤")
+    print("│  1. 날짜 입력 (형식: YYYYMMDD 예: 20260419)  │")
+    print("│  2. 경기장 이름 (도쿄, 나카야마, 한신, 교토) │")
+    print("└" + "─" * 45 + "┘")
+    
+    date_input = input("\n📅 이관할 날짜를 입력하세요: ").strip()
+    if not re.match(r"^\d{8}$", date_input):
+        print("❌ 오류: 날짜 형식이 올바르지 않습니다.")
+        return
+    venue_input = input("🏟️ 경기장 이름을 입력하세요 (도쿄/나카야마/한신/교토): ").strip()
+    if venue_input not in VENUE_MAP:
+        print(f"❌ 오류: '{venue_input}'은(는) 지원하지 않는 경기장입니다.")
+        return
+        
+    japanese_venue = VENUE_MAP[venue_input]
+    logger.info(f"\n========== [Phase 5-Result] 과거 경기 결과 API 이관 시작: {date_input} {japanese_venue} ==========")
+    if not (DB_DIR / "mariadb_result_api_transfer.py").exists():
+        logger.error(f"[오류] mariadb_result_api_transfer.py 파일을 찾을 수 없습니다.")
+    else:
+        subprocess.run([sys.executable, "mariadb_result_api_transfer.py", "--date", date_input, "--venue", japanese_venue], cwd=DB_DIR)
+        logger.info("\n========== 데이터 이관 작업이 완료되었습니다. ==========")
+
 def print_discovery_results(targets):
     print("\n" + "-" * 50)
     print(f"📡 자동 탐색 성공! 총 {len(targets)}개의 대상을 찾았습니다.")
@@ -260,13 +335,13 @@ def main():
 
     while True:
         print_menu()
-        mode = input("선택하실 번호를 입력하세요 (1, 2, 3, 4 또는 q): ").strip().lower()
+        mode = input("선택하실 번호를 입력하세요 (1, 2, 3, 4, 5, 6, 7, 8 또는 q): ").strip().lower()
         
         if mode == 'q':
             print("\n프로그램을 종료합니다.")
             break
             
-        if mode not in ["1", "2", "3", "4"]:
+        if mode not in ["1", "2", "3", "4", "5", "6", "7", "8"]:
             print("\n[오류] 잘못된 입력입니다.")
             continue
 
@@ -279,6 +354,14 @@ def main():
                 run_mode_3()
             elif mode == "4":
                 run_mode_4()
+            elif mode == "5":
+                run_mode_5()
+            elif mode == "6":
+                run_mode_6()
+            elif mode == "7":
+                run_mode_7()
+            elif mode == "8":
+                run_mode_8()
             
             logger.info("\n[성공] 파이프라인 작업이 종료되었습니다.")
         except KeyboardInterrupt:

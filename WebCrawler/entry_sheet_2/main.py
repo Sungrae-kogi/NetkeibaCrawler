@@ -49,7 +49,8 @@ def main():
     print(f"========== api_entry_sheet_2 수집 시작 (Base ID: {prefix}) ==========")
     
     any_failed = False
-    for i in range(1, 13):
+    # 테스트를 위해 임시로 9~11경주만 수집하도록 수정 (1~12 -> 9~11)
+    for i in range(9, 12):
         race_id = f"{prefix}{i:02d}"
         url = base_url_template.format(race_id)
         
@@ -84,7 +85,7 @@ def main():
     if all_entries:
         # User DDL에 맞춘 Column 순서
         fieldnames = [
-            "MEET", "RCDATE", "RCDAY", "RCNO", "CHULNO", "HRNAME", "HRNO",
+            "MEET", "RCDATE", "RCDAY", "RCNO", "WAKU", "CHULNO", "HRNAME", "HRNO",
             "SEX", "AGE", "WGBUDAM", "JKNAME", "JKNO",
             "TRNAME", "TRNO", "TRACK_TYPE", "DIRECTION", "RCDIST", "DUSU",
             "RANK", "AGECOND", "STTIME", "RCNAME", "CHAKSUN1",

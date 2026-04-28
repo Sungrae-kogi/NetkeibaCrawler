@@ -369,7 +369,16 @@ async def parse_horse_page(
                 td_text = _clean_td_value(td)
 
                 if "生年月日" in key:
-                    out["BIRTHDAY"] = td_text
+                    if td_text:
+                        # 방어 코드: YYYY年M月D日 구조인지 검증
+                        if re.match(r"^\d{4}年\d{1,2}月\d{1,2}日$", td_text):
+                            out["BIRTHDAY"] = td_text
+                        else:
+                            print(f"[WARN] 생년월일 포맷 이상 감지 (HRNO={hr_no}): '{td_text}'")
+                            # 데이터 유실 방지를 위해 원본 텍스트를 유지하거나, 추가적인 처리를 할 수 있습니다.
+                            out["BIRTHDAY"] = td_text
+                    else:
+                        out["BIRTHDAY"] = None
                 elif "調教師" in key:
                     a = td.find("a")
                     if a:
