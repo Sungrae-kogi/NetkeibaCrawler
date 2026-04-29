@@ -94,16 +94,23 @@ def process_csv_file(conn, csv_path, table_name):
                 return False
         return False
 
-def upload_all_csv_to_db():
+def upload_all_csv_to_db(target_date=None, target_venue=None):
     # 상위 경로를 sys.path에 추가하여 WebCrawler 모듈을 가져올 수 있도록 함
     if str(BASE_DIR.parent) not in sys.path:
         sys.path.append(str(BASE_DIR.parent))
     from WebCrawler.discovery import get_all_target_races
 
-    targets_info = get_all_target_races()
-    if not targets_info:
-        logger.warning("자동 탐색(discovery)된 경기 정보가 없습니다. DB 업로드를 종료합니다.")
-        return
+    if target_date and target_venue:
+        # 특정 날짜와 경기장이 지정된 경우
+        targets_info = [{"date": target_date, "venue": target_venue}]
+        logger.info(f"지정된 대상 업로드 시도: {target_date} {target_venue}")
+    else:
+        # 지정되지 않은 경우 전체 탐색
+        targets_info = get_all_target_races()
+        if not targets_info:
+            logger.warning("자동 탐색(discovery)된 경기 정보가 없습니다. DB 업로드를 종료합니다.")
+            return
+        logger.info(f"자동 탐색된 {len(targets_info)}개의 대상을 처리합니다.")
 
     # 업로드 대상 정의 (동적 생성)
     TARGETS = []
@@ -155,6 +162,12 @@ def upload_all_csv_to_db():
         logger.info(f"총 {total_files}개의 파일 중 {success_count}개 파일 업로드 완료.")
 
 if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description="CSV -> MariaDB 업로드")
+    parser.add_argument("--date", help="YYYYMMDD 형식의 날짜 (선택)")
+    parser.add_argument("--venue", help="경기장 이름 (선택)")
+    args = parser.parse_args()
+
     logger.info("==== DB 자동 업로드 (CSV -> MariaDB) 시작 ====")
-    upload_all_csv_to_db()
+    upload_all_csv_to_db(args.date, args.venue)
     logger.info("==== 업로드 프로세스 종료 ====")

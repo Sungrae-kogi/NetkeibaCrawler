@@ -30,15 +30,22 @@ def get_db_connection(config):
         cursorclass=pymysql.cursors.DictCursor
     )
 
-def execute_transfer(max_retries=3):
+def execute_transfer(target_date=None, target_venue=None, max_retries=3):
     if str(BASE_DIR.parent) not in sys.path:
         sys.path.append(str(BASE_DIR.parent))
     from WebCrawler.discovery import get_all_target_races
 
-    targets_info = get_all_target_races()
-    if not targets_info:
-        logger.warning("자동 탐색(discovery)된 경기 정보가 없습니다. DB 이관을 종료합니다.")
-        return
+    if target_date and target_venue:
+        # 특정 날짜와 경기장이 지정된 경우
+        targets_info = [{"date": target_date, "venue": target_venue}]
+        logger.info(f"지정된 대상 이관 시도: {target_date} {target_venue}")
+    else:
+        # 지정되지 않은 경우 전체 탐색
+        targets_info = get_all_target_races()
+        if not targets_info:
+            logger.warning("자동 탐색(discovery)된 경기 정보가 없습니다. DB 이관을 종료합니다.")
+            return
+        logger.info(f"자동 탐색된 {len(targets_info)}개의 대상을 처리합니다.")
 
     unique_venues = set(t['venue'] for t in targets_info)
     unique_dates = set(t['date'] for t in targets_info)
@@ -172,7 +179,8 @@ def execute_transfer(max_retries=3):
             FROM tmp_races r
             LEFT JOIN tmp_horses h 
                 ON r.MEET = h.MEET AND r.HRNO = h.HR_NO
-            WHERE r.RCDATE IN {target_dates};
+            WHERE r.RCDATE IN {target_dates}
+              AND r.AGECOND NOT LIKE '障害%';
         """,
         "3. api_race_plan 삽입": f"""
             INSERT INTO api_race_plan (
@@ -207,6 +215,7 @@ def execute_transfer(max_retries=3):
                 MAX(WETR), MAX(GOING), MAX(TRACK_TYPE), MAX(DIRECTION)
             FROM tmp_races
             WHERE RCDATE IN {target_dates}
+              AND AGECOND NOT LIKE '障害%'
             GROUP BY 
                 MEET, RCDATE, RCNO
             ON DUPLICATE KEY UPDATE
@@ -357,6 +366,12 @@ def execute_transfer(max_retries=3):
             return
 
 if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description="DB API 테이블 데이터 이관(JOIN)")
+    parser.add_argument("--date", help="YYYYMMDD 형식의 날짜 (선택)")
+    parser.add_argument("--venue", help="경기장 이름 (선택)")
+    args = parser.parse_args()
+
     logger.info("==== DB API 테이블 데이터 이관(JOIN) 모듈 시작 ====")
-    execute_transfer()
+    execute_transfer(args.date, args.venue)
     logger.info("==== 이관 프로세스 종료 ====")

@@ -22,11 +22,9 @@ def sanitize_text(val):
 # 1. 상수 및 헬퍼 함수
 # ==========================================
 HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/120.0 Safari/537.36"
-    ),
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.5",
     "Referer": "https://db.netkeiba.com/",
 }
 
@@ -327,7 +325,7 @@ async def parse_horse_page(
 ) -> dict:
     out = {
         "HR_NO": hr_no,
-        "HR_NAME": None, "SEX": None, "AGE": None, "BIRTHDAY": None,
+        "HR_NAME": None, "ENG_HRNM": None, "SEX": None, "AGE": None, "BIRTHDAY": None,
         "TR_NAME": None, "TR_NO": None, "OW_NAME": None, "OW_NO": None,
         "BREEDER": None, "BRED_REGION": None, "HR_LAST_AMT": None,
         "CHAKSUNT_JRA": None, "CHAKSUNT_NAR": None, "CAREER_TOTAL": None,
@@ -345,7 +343,15 @@ async def parse_horse_page(
 
     title_tag = soup.select_one(".horse_title")
     if title_tag:
-        out["HR_NAME"] = title_tag.get_text(" ", strip=True).split()[0]
+        h1 = title_tag.find("h1")
+        if h1:
+            out["HR_NAME"] = h1.get_text(" ", strip=True).split()[0]
+        else:
+            out["HR_NAME"] = title_tag.get_text(" ", strip=True).split()[0]
+            
+        eng_tag = title_tag.select_one(".eng_name a") or title_tag.select_one(".eng_name")
+        if eng_tag:
+            out["ENG_HRNM"] = eng_tag.get_text(" ", strip=True)
 
     txt01_tag = soup.select_one(".txt_01")
     if txt01_tag:

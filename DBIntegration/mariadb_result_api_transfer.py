@@ -37,7 +37,7 @@ def execute_result_transfer(target_date_raw, target_venue, max_retries=3):
     
     queries = {
         "1. api_race_detail_result_1 삽입": f"""
-            INSERT INTO test_api_race_detail_result_1 (
+            INSERT INTO api_race_detail_result_1 (
                 RCDIST, CHULNO, HRNAME, HRNO, JKNAME, JKNO,
                 MEET, RCDATE, RCNO, RCTIME, RANK,
                 RCTYPE, RCDIRECTION,
@@ -106,7 +106,7 @@ def execute_result_transfer(target_date_raw, target_venue, max_retries=3):
                 T16 = VALUES(T16), T17 = VALUES(T17), T18 = VALUES(T18), T19 = VALUES(T19), T20 = VALUES(T20);
         """,
         "2. api_race_result 삽입": f"""
-            INSERT INTO test_api_race_result (
+            INSERT INTO api_race_result (
                 RCCRS_NM, RACE_DT, RACE_NO, RACE_DS, RACE_NM,
                 GTNO, HRNO, HRNM, ENG_HRNM, PCTY_NM,
                 BTHD, LATST_PTIN_DT, GNDR_NM, RATG_SO, RCHR_WEG,
@@ -123,7 +123,7 @@ def execute_result_transfer(target_date_raw, target_venue, max_retries=3):
                 CAST(NULLIF(TRIM(r.CHULNO), '') AS UNSIGNED), 
                 r.HRNO, 
                 r.HRNAME, 
-                NULL, 
+                h.ENG_HRNM, 
                 NULL, 
                 h.BIRTHDAY, 
                 NULL, 
@@ -138,26 +138,26 @@ def execute_result_transfer(target_date_raw, target_venue, max_retries=3):
                 NULL, 
                 NULL, 
                 r.RK, 
-                CAST(
-                    IF(r.RACE_RCD LIKE '%:%',
-                        (CAST(SUBSTRING_INDEX(r.RACE_RCD, ':', 1) AS UNSIGNED) * 60) 
-                        + CAST(SUBSTRING_INDEX(r.RACE_RCD, ':', -1) AS FLOAT),
-                        CAST(NULLIF(TRIM(r.RACE_RCD), '') AS FLOAT)
-                    ) 
-                AS UNSIGNED), 
+                IF(r.RACE_RCD LIKE '%:%',
+                    (CAST(SUBSTRING_INDEX(r.RACE_RCD, ':', 1) AS UNSIGNED) * 60) 
+                    + CAST(SUBSTRING_INDEX(r.RACE_RCD, ':', -1) AS FLOAT),
+                    CAST(NULLIF(TRIM(r.RACE_RCD), '') AS FLOAT)
+                ), 
                 r.MARGIN, 
                 CAST(NULLIF(TRIM(r.WIN_ODDS), '') AS FLOAT), 
                 NULL 
-            FROM test_tmp_races r
-            LEFT JOIN test_tmp_horses h 
+            FROM tmp_races r
+            LEFT JOIN tmp_horses h 
                 ON r.MEET = h.MEET AND r.HRNO = h.HR_NO
             WHERE r.RCDATE = '{target_date}'
               AND r.MEET IN ('{target_venue}')
+              AND r.AGECOND NOT LIKE '障害%'
             ON DUPLICATE KEY UPDATE
                 BTHD = VALUES(BTHD),
                 RACE_DS = VALUES(RACE_DS),
                 RACE_NM = VALUES(RACE_NM),
                 HRNM = VALUES(HRNM),
+                ENG_HRNM = VALUES(ENG_HRNM),
                 GNDR_NM = VALUES(GNDR_NM),
                 RCHR_WEG = VALUES(RCHR_WEG),
                 BURD_WGT = VALUES(BURD_WGT),
