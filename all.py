@@ -223,6 +223,45 @@ def validate_csv_data(date, venue):
         logger.error(f"  [검증 에러] {e}")
         return False
 
+def validate_result_csv_data(date, venue):
+    """결과 CSV 파일을 열어 12경주의 순위(RK) 또는 착차(MARGIN) 데이터가 존재하는지 검증 (경기가 모두 끝났는지 확인)"""
+    csv_path = WEB_CRAWLER_DIR / "data" / f"race_planning_{venue}_{date}.csv"
+    if not csv_path.exists():
+        logger.warning(f"  [검증 실패] 파일 없음: {csv_path.name}")
+        return False
+    
+    try:
+        import csv
+        with open(csv_path, 'r', encoding='utf-8-sig') as f:
+            reader = csv.DictReader(f)
+            rows = list(reader)
+            if not rows:
+                return False
+            
+            # 마지막 경주번호 찾기 (보통 12)
+            rcnos = [int(row.get('RCNO', 0)) for row in rows if row.get('RCNO', '').isdigit()]
+            if not rcnos:
+                return False
+                
+            last_rcno = max(rcnos)
+            if last_rcno < 12:
+                 logger.warning(f"  [검증 실패] {csv_path.name} - 아직 12경주 데이터가 생성되지 않았습니다.")
+                 return False
+            
+            for row in rows:
+                if str(row.get('RCNO', '')).zfill(2) == str(last_rcno).zfill(2) or row.get('RCNO') == str(last_rcno):
+                    rk = row.get('RK', '').strip()
+                    margin = row.get('MARGIN', '').strip()
+                    # 취소마 등은 RK가 없을 수 있으므로 MARGIN(취소 등)이라도 있는지 확인
+                    if not rk and not margin:
+                        logger.warning(f"  [검증 실패] {csv_path.name} - 마지막 경주({last_rcno}R) 결과 데이터 누락 (RK/MARGIN 없음)")
+                        return False
+        return True
+    except Exception as e:
+        logger.error(f"  [검증 에러] {e}")
+        return False
+
+
 def trigger_external_api(date, venue, max_retries=3):
     """외부 AI 예측 시스템 API 호출 (동기 방식)"""
     # 경기장 한글명을 파라미터용으로 변환 (필요시) - 여기서는 일본어 명칭 그대로 사용하거나 매핑 필요
@@ -334,6 +373,92 @@ def run_automation_pipeline(mode):
                 processed_combos.append(combo)
         
         logger.info(f"\n✅ {day_name} 모든 자동화 작업이 성공적으로 종료되었습니다. 프로그램을 종료합니다.")
+        sys.exit(0)
+
+def run_result_automation_pipeline(mode):
+    """과거 결과 자동화 모드 메인 루프 (--auto 4: 토요일, --auto 5: 일요일)"""
+    from datetime import datetime, timedelta
+    
+    target_weekday = 5 if mode == "4" else 6
+    day_name = "토요일 결과" if mode == "4" else "일요일 결과"
+    
+    today = datetime.today()
+    days_diff = target_weekday - today.weekday()
+    if days_diff > 0:
+        days_diff -= 7  # 오늘 기준 지난(혹은 오늘) 요일을 찾음
+    target_date = today + timedelta(days=days_diff)
+    target_date_str = target_date.strftime("%Y%m%d")
+
+    send_telegram_message(f"🚀 [{day_name}] 결과 데이터 자동화 파이프라인 시작 (대상: {target_date_str})")
+    logger.info(f"========== {day_name} 자동화 시작: 타겟 날짜 {target_date_str} ==========")
+    
+    while True:
+        logger.info(f"🔍 {target_date_str} 결과 데이터 스캔 중...")
+        targets = discover_races(target_date_str)
+        
+        if not targets:
+            logger.info("아직 대상 데이터가 없습니다. 10분 후 다시 스캔합니다.")
+            time.sleep(600)
+            continue
+            
+        all_completed = True
+        
+        for t in targets:
+            logger.info(f"▶ 타겟 확인: {t['date']} {t['venue']} (URL: {t['url']})")
+            
+            # 1. 경기 결과 수집 (Phase 1)
+            run_mode_1_logic(t['url'])
+            
+            # 2. 수집된 결과 CSV 검증 (모든 경주가 종료되었는지)
+            is_valid = validate_result_csv_data(t['date'], t['venue'])
+            if not is_valid:
+                logger.warning(f"⚠️ {t['venue']} - 아직 경기 결과가 완벽하게 집계되지 않았습니다.")
+                all_completed = False
+                
+        if not all_completed:
+            logger.info("⏳ 일부 경기장 결과가 미완성입니다. 10분 후 다시 스캔 및 검증을 시도합니다.")
+            time.sleep(600)
+            continue
+            
+        logger.info("✨ 모든 경기 결과 데이터 수집 및 검증 완료! 하위 상세 데이터 수집을 시작합니다.")
+        
+        # 3. 하위 디테일 크롤러 가동 (모든 경기장 대상)
+        child_success = True
+        for t in targets:
+            suffix = f"{t['venue']}_{t['date']}"
+            if run_child_crawlers(suffix) is False:
+                child_success = False
+
+        if child_success:
+            send_telegram_message(f"✅ [{day_name}] 모든 결과 데이터를 확실히 CSV로 저장 완료!")
+        else:
+            send_telegram_message(f"❌ [{day_name}] 일부 결과 CSV 데이터 수집 실패! (DB 적재는 가능한 대상만 진행합니다)")
+
+        logger.info("✨ 결과 데이터 수집 및 검증 완료! 후속 작업을 진행합니다.")
+        
+        # 4. DB 업로드 (8번) 및 API 이관 (9번) - 경기장별 순차 처리
+        processed_combos = []
+        for t in targets:
+            combo = (t['date'], t['venue'])
+            if combo not in processed_combos:
+                # DB 업로드
+                if run_mode_8(t['date'], t['venue']):
+                    send_telegram_message(f"✅ [{t['date']} {t['venue']}] 결과 CSV를 DB tmp_races 테이블에 적재 완료!")
+                else:
+                    send_telegram_message(f"❌ [{t['date']} {t['venue']}] DB 결과 테이블 적재 도중 실패!")
+                    continue
+                    
+                # API 이관
+                if run_mode_9(t['date'], t['venue']):
+                    send_telegram_message(f"✅ [{t['date']} {t['venue']}] 결과 데이터를 API 테이블에 완벽히 이관 완료!")
+                else:
+                    send_telegram_message(f"❌ [{t['date']} {t['venue']}] API 테이블 이관 실패!")
+                    continue
+                    
+                processed_combos.append(combo)
+        
+        send_telegram_message(f"🚀 [{day_name}] 모든 결과 데이터 처리 파이프라인 무사 종료!")
+        logger.info(f"\n✅ {day_name} 모든 결과 자동화 작업이 성공적으로 종료되었습니다. 프로그램을 종료합니다.")
         sys.exit(0)
 
 def run_mode_1():
@@ -485,57 +610,100 @@ def run_mode_7(date=None, venue=None, max_retries=3):
             
     return False
 
-def run_mode_8():
+def run_mode_8(date=None, venue=None, max_retries=3):
     """8번 모드: 과거 경기 결과 CSV 데이터를 DB에 업로드 (DELETE & INSERT)"""
-    print("\n" + "┌" + "─" * 45 + "┐")
-    print("│       [ 과거 경기 결과 DB 업로드 대상 입력 ]       │")
-    print("├" + "─" * 45 + "┤")
-    print("│  1. 날짜 입력 (형식: YYYYMMDD 예: 20260419)  │")
-    print("│  2. 경기장 이름 (도쿄, 나카야마, 한신, 교토) │")
-    print("└" + "─" * 45 + "┘")
-    
-    date_input = input("\n📅 수집된 날짜를 입력하세요: ").strip()
-    if not re.match(r"^\d{8}$", date_input):
-        print("❌ 오류: 날짜 형식이 올바르지 않습니다.")
-        return
-    venue_input = input("🏟️ 경기장 이름을 입력하세요 (도쿄/나카야마/한신/교토): ").strip()
-    if venue_input not in VENUE_MAP:
-        print(f"❌ 오류: '{venue_input}'은(는) 지원하지 않는 경기장입니다.")
-        return
-        
-    japanese_venue = VENUE_MAP[venue_input]
-    logger.info(f"\n========== [Phase 4-Result] 과거 경기 결과 CSV DB 업로드 시작: {date_input} {japanese_venue} ==========")
+    logger.info(f"\n========== [Phase 4-Result] 과거 경기 결과 CSV DB 업로드 시작 ==========")
     if not (DB_DIR / "mariadb_result_upsert.py").exists():
         logger.error(f"[오류] mariadb_result_upsert.py 파일을 찾을 수 없습니다.")
-    else:
-        subprocess.run([sys.executable, "mariadb_result_upsert.py", "--date", date_input, "--venue", japanese_venue], cwd=DB_DIR)
-        logger.info("\n========== DB 업로드 작업이 완료되었습니다. ==========")
-
-def run_mode_9():
-    """9번 모드: 과거 경기 결과 임시 테이블 데이터를 API 테이블로 이관"""
-    print("\n" + "┌" + "─" * 45 + "┐")
-    print("│       [ 과거 경기 결과 API 이관 대상 입력 ]        │")
-    print("├" + "─" * 45 + "┤")
-    print("│  1. 날짜 입력 (형식: YYYYMMDD 예: 20260419)  │")
-    print("│  2. 경기장 이름 (도쿄, 나카야마, 한신, 교토) │")
-    print("└" + "─" * 45 + "┘")
-    
-    date_input = input("\n📅 이관할 날짜를 입력하세요: ").strip()
-    if not re.match(r"^\d{8}$", date_input):
-        print("❌ 오류: 날짜 형식이 올바르지 않습니다.")
-        return
-    venue_input = input("🏟️ 경기장 이름을 입력하세요 (도쿄/나카야마/한신/교토): ").strip()
-    if venue_input not in VENUE_MAP:
-        print(f"❌ 오류: '{venue_input}'은(는) 지원하지 않는 경기장입니다.")
-        return
+        return False
         
-    japanese_venue = VENUE_MAP[venue_input]
-    logger.info(f"\n========== [Phase 5-Result] 과거 경기 결과 API 이관 시작: {date_input} {japanese_venue} ==========")
+    cmd = [sys.executable, "mariadb_result_upsert.py"]
+    if date and venue:
+        cmd.extend(["--date", date, "--venue", venue])
+    else:
+        # date와 venue가 없으면 기존처럼 input 받음 (수동 실행용)
+        print("\n" + "┌" + "─" * 45 + "┐")
+        print("│       [ 과거 경기 결과 DB 업로드 대상 입력 ]       │")
+        print("├" + "─" * 45 + "┤")
+        print("│  1. 날짜 입력 (형식: YYYYMMDD 예: 20260419)  │")
+        print("│  2. 경기장 이름 (도쿄, 나카야마, 한신, 교토) │")
+        print("└" + "─" * 45 + "┘")
+        
+        date_input = input("\n📅 수집된 날짜를 입력하세요: ").strip()
+        if not re.match(r"^\d{8}$", date_input):
+            print("❌ 오류: 날짜 형식이 올바르지 않습니다.")
+            return False
+        venue_input = input("🏟️ 경기장 이름을 입력하세요 (도쿄/나카야마/한신/교토): ").strip()
+        if venue_input not in VENUE_MAP:
+            print(f"❌ 오류: '{venue_input}'은(는) 지원하지 않는 경기장입니다.")
+            return False
+            
+        japanese_venue = VENUE_MAP[venue_input]
+        cmd.extend(["--date", date_input, "--venue", japanese_venue])
+        
+    for attempt in range(1, max_retries + 1):
+        if attempt > 1:
+            logger.info(f"--- [DB 업로드 재시도] {attempt}/{max_retries} 회차 ---")
+            
+        res = subprocess.run(cmd, cwd=DB_DIR)
+        if res.returncode == 0:
+            logger.info("\n========== DB 업로드 작업이 완료되었습니다. ==========")
+            return True
+        else:
+            logger.warning(f"⚠️ DB 업로드 실패 (종료코드: {res.returncode})")
+            
+        if attempt < max_retries:
+            logger.warning("⚠️ 5초 후 DB 업로드를 재시도합니다.")
+            time.sleep(5)
+            
+    return False
+
+def run_mode_9(date=None, venue=None, max_retries=3):
+    """9번 모드: 과거 경기 결과 임시 테이블 데이터를 API 테이블로 이관"""
+    logger.info(f"\n========== [Phase 5-Result] 과거 경기 결과 API 이관 시작 ==========")
     if not (DB_DIR / "mariadb_result_api_transfer.py").exists():
         logger.error(f"[오류] mariadb_result_api_transfer.py 파일을 찾을 수 없습니다.")
+        return False
+        
+    cmd = [sys.executable, "mariadb_result_api_transfer.py"]
+    if date and venue:
+        cmd.extend(["--date", date, "--venue", venue])
     else:
-        subprocess.run([sys.executable, "mariadb_result_api_transfer.py", "--date", date_input, "--venue", japanese_venue], cwd=DB_DIR)
-        logger.info("\n========== 데이터 이관 작업이 완료되었습니다. ==========")
+        print("\n" + "┌" + "─" * 45 + "┐")
+        print("│       [ 과거 경기 결과 API 이관 대상 입력 ]        │")
+        print("├" + "─" * 45 + "┤")
+        print("│  1. 날짜 입력 (형식: YYYYMMDD 예: 20260419)  │")
+        print("│  2. 경기장 이름 (도쿄, 나카야마, 한신, 교토) │")
+        print("└" + "─" * 45 + "┘")
+        
+        date_input = input("\n📅 이관할 날짜를 입력하세요: ").strip()
+        if not re.match(r"^\d{8}$", date_input):
+            print("❌ 오류: 날짜 형식이 올바르지 않습니다.")
+            return False
+        venue_input = input("🏟️ 경기장 이름을 입력하세요 (도쿄/나카야마/한신/교토): ").strip()
+        if venue_input not in VENUE_MAP:
+            print(f"❌ 오류: '{venue_input}'은(는) 지원하지 않는 경기장입니다.")
+            return False
+            
+        japanese_venue = VENUE_MAP[venue_input]
+        cmd.extend(["--date", date_input, "--venue", japanese_venue])
+        
+    for attempt in range(1, max_retries + 1):
+        if attempt > 1:
+            logger.info(f"--- [API 이관 재시도] {attempt}/{max_retries} 회차 ---")
+            
+        res = subprocess.run(cmd, cwd=DB_DIR)
+        if res.returncode == 0:
+            logger.info("\n========== 데이터 이관 작업이 완료되었습니다. ==========")
+            return True
+        else:
+            logger.warning(f"⚠️ API 테이블 이관 실패 (종료코드: {res.returncode})")
+            
+        if attempt < max_retries:
+            logger.warning("⚠️ 5초 후 API 테이블 이관을 재시도합니다.")
+            time.sleep(5)
+            
+    return False
 
 def run_mode_10():
     """10번 모드: 협업자용 - 말 원본 사진 다운로더"""
@@ -582,12 +750,15 @@ def print_discovery_results(targets):
 def main():
     import argparse
     parser = argparse.ArgumentParser(description="넷케이바 자동화 마스터 파이프라인")
-    parser.add_argument("--auto", choices=["2", "3"], help="자동화 모드 실행 (2:토요일, 3:일요일)")
+    parser.add_argument("--auto", choices=["2", "3", "4", "5"], help="자동화 모드 실행 (2:토 계획, 3:일 계획, 4:토 결과, 5:일 결과)")
     args = parser.parse_args()
 
     # 0. 자동화 모드 체크
-    if args.auto:
+    if args.auto in ["2", "3"]:
         run_automation_pipeline(args.auto)
+        return
+    elif args.auto in ["4", "5"]:
+        run_result_automation_pipeline(args.auto)
         return
 
     # 0. 넷케이바 프리미엄 세션 자동 확인

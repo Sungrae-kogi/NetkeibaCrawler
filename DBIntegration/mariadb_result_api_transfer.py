@@ -90,6 +90,7 @@ def execute_result_transfer(target_date_raw, target_venue, max_retries=3):
             FROM test_tmp_races
             WHERE RCDATE = '{target_date}' 
               AND MEET IN ('{target_venue}')
+              AND AGECOND NOT LIKE '障害%'
             ON DUPLICATE KEY UPDATE
                 RCDIST = VALUES(RCDIST),
                 HRNAME = VALUES(HRNAME),
