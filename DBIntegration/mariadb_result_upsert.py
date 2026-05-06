@@ -140,6 +140,8 @@ def upload_result_csv_to_db(target_date, target_venue):
         (BASE_DIR.parent / "HRNOCrawler" / "data" / f"HRNO_result_{target_venue}_{target_date}.csv", "tmp_horses"),
         (BASE_DIR.parent / "JKNOCrawler" / "data" / f"JKNO_result_{target_venue}_{target_date}.csv", "tmp_jockeys")
     ]
+
+
     
     total_files = 0
     success_count = 0

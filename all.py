@@ -73,16 +73,26 @@ def print_menu():
     print("\n" + "=" * 60)
     print("   🐎 넷케이바 (Netkeiba) 기가 크롤링 마스터 파이프라인 🐎")
     print("=" * 60)
+    print(" [ 운영 가이드 ]")
+    print(" 💡 매주 금요일 18:00: 지난 주 경기 결과의 구간별 기록 업데이트")
+    print("    -> 1번(수집) -> 8번(DB업로드) -> 9번(API이관) 순서로 수행")
+    print("-" * 60)
+    print(" [ 자동화 인수 (--auto) 설명 ]")
+    print(" --auto 2 : 토요일 계획 자동화 (2 -> 6 -> 7 -> AI API 호출)")
+    print(" --auto 3 : 일요일 계획 자동화 (3 -> 6 -> 7 -> AI API 호출)")
+    print(" --auto 4 : 지난 토요일 결과 자동화 (1 -> 8 -> 9 수행)")
+    print(" --auto 5 : 지난 일요일 결과 자동화 (1 -> 8 -> 9 수행)")
+    print("=" * 60)
     print("크롤링 모드를 선택하세요:")
     print("  1. 과거 경기 결과 수집 (날짜+장소 입력 자동 탐색)")
-    print("  2. 토요일 경기 계획 수집 (Automatic Discovery)")
-    print("  3. 일요일 경기 계획 수집 (Automatic Discovery)")
+    print("  2. 이번주 토요일 경기 계획 수집 (Automatic Discovery)")
+    print("  3. 이번주 일요일 경기 계획 수집 (Automatic Discovery)")
     print("  4. 실시간 변경 정보 모니터링 (Information)")
     print("  5. 날씨 및 바장 정보 즉시 수집 (Weather Only)")
-    print("  6. 수집된 출마표 CSV 데이터를 DB에 업로드 (MariaDB)")
-    print("  7. DB 내 임시 테이블 데이터를 API 테이블로 이관 (JOIN)")
-    print("  8. 수집된 [과거 경기 결과] CSV를 DB에 업로드 (DELETE & INSERT)")
-    print("  9. [과거 경기 결과] 임시 테이블 데이터를 API 테이블로 이관")
+    print("  6. [계획] 수집된 출마표 CSV를 DB에 업로드 (MariaDB)")
+    print("  7. [계획] DB 임시 테이블 데이터를 API 테이블로 이관")
+    print("  8. [결과] 수집된 결과 CSV를 DB에 업로드 (DELETE & INSERT)")
+    print("  9. [결과] DB 임시 테이블 데이터를 API 테이블로 이관")
     print("-" * 60)
     print("  [ 협업자 전용 도구 ]")
     print("  10. 경주마 원본 사진 다운로더 (Netkeiba DB 기반 최대 30장)")
@@ -262,37 +272,34 @@ def validate_result_csv_data(date, venue):
         return False
 
 
-def trigger_external_api(date, venue, max_retries=3):
-    """외부 AI 예측 시스템 API 호출 (동기 방식)"""
-    # 경기장 한글명을 파라미터용으로 변환 (필요시) - 여기서는 일본어 명칭 그대로 사용하거나 매핑 필요
-    # API가 일본어 명칭을 받는지 확인 필요 (현재 md에는 {경기장}으로 되어 있음)
+import threading
+
+def _api_call_thread(url):
+    try:
+        # 백그라운드에서 최대 1시간까지 기다려보되, 에러가 나도 무시함
+        requests.get(url, timeout=3600)
+    except Exception as e:
+        logger.warning(f"백그라운드 API 호출 중 연결 끊김 (서버 작업은 계속될 수 있음): {e}")
+
+def trigger_external_api(date, venue, is_last=False):
+    """외부 AI 예측 시스템 API 호출 (비동기 및 30분 강제 대기 방식)"""
     url = f"https://j.mafeel.ai/schedule/deploy/oneRaceDt.do?meet={venue}&raceDt={date}"
-    logger.info(f"🚀 외부 API 호출 시작: {url}")
+    logger.info(f"🚀 외부 API 백그라운드 호출 시작: {url}")
     
-    for attempt in range(1, max_retries + 1):
-        if attempt > 1:
-            logger.info(f"--- [API 호출 재시도] {attempt}/{max_retries} 회차 ---")
-            
-        try:
-            # 동기 방식이므로 응답이 올 때까지 대기. 타임아웃은 넉넉히 10분(600초) 설정
-            response = requests.get(url, timeout=600)
-            if response.status_code == 200:
-                result = response.json()
-                if result.get("status") == "OK":
-                    logger.info(f"✅ API 호출 성공 (OK): {venue} {date}")
-                    return True
-                else:
-                    logger.error(f"❌ API 응답 오류 (status: {result.get('status')}): {result}")
-            else:
-                logger.error(f"❌ HTTP 오류 (Status: {response.status_code})")
-        except Exception as e:
-            logger.error(f"❌ API 호출 중 장애 발생: {e}")
-            
-        if attempt < max_retries:
-            logger.warning("⚠️ 10초 후 API 호출을 재시도합니다.")
-            time.sleep(10)
-            
-    return False
+    # API 요청을 백그라운드로 발송
+    t = threading.Thread(target=_api_call_thread, args=(url,))
+    t.daemon = False # 파이썬 메인 스레드가 끝나도 API 응답을 기다리며 연결을 유지함
+    t.start()
+    
+    if is_last:
+        logger.info("⏳ 마지막 경기장의 API 호출을 전송했습니다. 대기 없이 종료 절차로 넘어갑니다.")
+    else:
+        # 메인 흐름은 무조건 30분 대기
+        logger.info("⏳ API 호출 요청을 전송했습니다. 지금부터 30분(1800초) 대기를 시작합니다...")
+        time.sleep(1800)
+        logger.info("⏳ 30분 대기가 완료되었습니다. 다음 단계로 넘어갑니다.")
+        
+    return True
 
 def run_automation_pipeline(mode):
     """완전 자동화 파이프라인 루프 (10분 간격 스캔 -> DB -> API)"""
@@ -350,27 +357,31 @@ def run_automation_pipeline(mode):
         for t in targets:
             combo = (t['date'], t['venue'])
             if combo not in processed_combos:
-                # DB 업로드
-                if run_mode_6(t['date'], t['venue']):
-                    send_telegram_message(f"✅ [{t['date']} {t['venue']}] CSV를 DB tmp 테이블에 적재 완료!")
-                else:
-                    send_telegram_message(f"❌ [{t['date']} {t['venue']}] DB tmp 테이블 적재 도중 실패!")
-                    continue
-                    
-                # API 이관
-                if run_mode_7(t['date'], t['venue']):
-                    send_telegram_message(f"✅ [{t['date']} {t['venue']}] tmp 데이터를 API 테이블에 완벽히 이관 완료!")
-                else:
-                    send_telegram_message(f"❌ [{t['date']} {t['venue']}] API 테이블 이관 실패!")
-                    continue
-                    
-                # 외부 API 트리거
-                if trigger_external_api(t['date'], t['venue']):
-                    send_telegram_message(f"🚀 [{t['date']} {t['venue']}] 마지막 단계: API 호출 성공 및 OK 수신!")
-                else:
-                    send_telegram_message(f"⚠️ [{t['date']} {t['venue']}] 마지막 단계: API 호출 실패 또는 에러 발생!")
-                    
                 processed_combos.append(combo)
+                
+        for idx, combo in enumerate(processed_combos):
+            t_date, t_venue = combo
+            is_last_item = (idx == len(processed_combos) - 1)
+            
+            # DB 업로드
+            if run_mode_6(t_date, t_venue):
+                send_telegram_message(f"✅ [{t_date} {t_venue}] CSV를 DB tmp 테이블에 적재 완료!")
+            else:
+                send_telegram_message(f"❌ [{t_date} {t_venue}] DB tmp 테이블 적재 도중 실패!")
+                continue
+                
+            # API 이관
+            if run_mode_7(t_date, t_venue):
+                send_telegram_message(f"✅ [{t_date} {t_venue}] tmp 데이터를 API 테이블에 완벽히 이관 완료!")
+            else:
+                send_telegram_message(f"❌ [{t_date} {t_venue}] API 테이블 이관 실패!")
+                continue
+                
+            # 외부 API 트리거
+            if trigger_external_api(t_date, t_venue, is_last=is_last_item):
+                send_telegram_message(f"🚀 [{t_date} {t_venue}] API 백그라운드 호출 전송 완료!")
+            else:
+                send_telegram_message(f"⚠️ [{t_date} {t_venue}] API 호출 전송 실패!")
         
         logger.info(f"\n✅ {day_name} 모든 자동화 작업이 성공적으로 종료되었습니다. 프로그램을 종료합니다.")
         sys.exit(0)
@@ -750,7 +761,7 @@ def print_discovery_results(targets):
 def main():
     import argparse
     parser = argparse.ArgumentParser(description="넷케이바 자동화 마스터 파이프라인")
-    parser.add_argument("--auto", choices=["2", "3", "4", "5"], help="자동화 모드 실행 (2:토 계획, 3:일 계획, 4:토 결과, 5:일 결과)")
+    parser.add_argument("--auto", choices=["2", "3", "4", "5"], help="자동화 모드 실행 (2:토 계획(2-6-7-AI), 3:일 계획(3-6-7-AI), 4:토 결과(1-8-9), 5:일 결과(1-8-9))")
     args = parser.parse_args()
 
     # 0. 자동화 모드 체크

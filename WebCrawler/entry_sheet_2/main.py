@@ -65,7 +65,17 @@ def main():
                 print(f"  -> 경기가 존재하지 않습니다. 당일 순회 종료.")
                 break
                 
-            entries = parse_api_entry_sheet_2(soup, url)
+            # Fetch Odds JSON data
+            odds_url = f"https://race.netkeiba.com/api/api_get_jra_odds.html?race_id={race_id}&type=1&action=init"
+            try:
+                odds_r = requests.get(odds_url, headers=HEADERS, cookies=cookies, timeout=10)
+                odds_r.raise_for_status()
+                odds_data = odds_r.json()
+            except Exception as e:
+                print(f"  -> 경고: 배당률 API 호출 실패 ({e})")
+                odds_data = None
+
+            entries = parse_api_entry_sheet_2(soup, url, odds_data)
             if not entries:
                 print(f"  -> 경고: {race_id}에서 데이터를 파싱하지 못했습니다.")
                 any_failed = True
@@ -89,7 +99,8 @@ def main():
             "SEX", "AGE", "WGBUDAM", "JKNAME", "JKNO",
             "TRNAME", "TRNO", "TRACK_TYPE", "DIRECTION", "RCDIST", "DUSU",
             "RANK", "AGECOND", "STTIME", "RCNAME", "CHAKSUN1",
-            "CHAKSUN2", "CHAKSUN3", "CHAKSUN4", "CHAKSUN5"
+            "CHAKSUN2", "CHAKSUN3", "CHAKSUN4", "CHAKSUN5",
+            "POPULARITY", "WIN_ODDS"
         ]
         
         first_row = all_entries[0]

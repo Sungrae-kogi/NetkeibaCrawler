@@ -87,7 +87,7 @@ def execute_result_transfer(target_date_raw, target_venue, max_retries=3):
                 CAST(NULLIF(TRIM(distance18), '') AS FLOAT),
                 CAST(NULLIF(TRIM(distance19), '') AS FLOAT),
                 CAST(NULLIF(TRIM(distance20), '') AS FLOAT)
-            FROM test_tmp_races
+            FROM tmp_races
             WHERE RCDATE = '{target_date}' 
               AND MEET IN ('{target_venue}')
               AND AGECOND NOT LIKE '障害%'

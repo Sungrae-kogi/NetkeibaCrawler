@@ -180,6 +180,7 @@ def execute_transfer(target_date=None, target_venue=None, max_retries=3):
             LEFT JOIN tmp_horses h 
                 ON r.MEET = h.MEET AND r.HRNO = h.HR_NO
             WHERE r.RCDATE IN {target_dates}
+              AND r.MEET IN {target_venues}
               AND r.AGECOND NOT LIKE '障害%';
         """,
         "3. api_race_plan 삽입": f"""
@@ -215,6 +216,7 @@ def execute_transfer(target_date=None, target_venue=None, max_retries=3):
                 MAX(WETR), MAX(GOING), MAX(TRACK_TYPE), MAX(DIRECTION)
             FROM tmp_races
             WHERE RCDATE IN {target_dates}
+              AND MEET IN {target_venues}
               AND AGECOND NOT LIKE '障害%'
             GROUP BY 
                 MEET, RCDATE, RCNO

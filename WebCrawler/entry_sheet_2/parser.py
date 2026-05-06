@@ -2,7 +2,7 @@ import re
 from typing import Dict, List
 from bs4 import BeautifulSoup
 
-def parse_api_entry_sheet_2(soup: BeautifulSoup, url: str) -> List[Dict]:
+def parse_api_entry_sheet_2(soup: BeautifulSoup, url: str, odds_data: Dict = None) -> List[Dict]:
     # 1. Parse common race metadata
     year = ""
     rcno = None
@@ -29,6 +29,8 @@ def parse_api_entry_sheet_2(soup: BeautifulSoup, url: str) -> List[Dict]:
         "CHAKSUN3": None,
         "CHAKSUN4": None,
         "CHAKSUN5": None,
+        "POPULARITY": None,
+        "WIN_ODDS": None,
     }
 
     # Date Tag (.RaceList_Date dd.Active)
@@ -225,6 +227,44 @@ def parse_api_entry_sheet_2(soup: BeautifulSoup, url: str) -> List[Dict]:
             else:
                 row_dict["TRNAME"] = tr_td.get_text(strip=True)
                 
+        # WIN_ODDS & POPULARITY
+        # Use odds_data JSON if available
+        odds_found_in_json = False
+        if odds_data and "data" in odds_data and "odds" in odds_data["data"]:
+            win_odds_dict = odds_data["data"]["odds"].get("1", {})
+            chulno_str = str(row_dict.get("CHULNO", "")).zfill(2) if row_dict.get("CHULNO") else ""
+            if chulno_str in win_odds_dict:
+                odds_info = win_odds_dict[chulno_str]
+                odds_found_in_json = True
+                if len(odds_info) >= 1 and odds_info[0]:
+                    try:
+                        row_dict["WIN_ODDS"] = float(odds_info[0])
+                    except ValueError:
+                        pass
+                if len(odds_info) >= 3 and odds_info[2]:
+                    try:
+                        row_dict["POPULARITY"] = int(odds_info[2])
+                    except ValueError:
+                        pass
+
+        # Fallback to HTML if JSON not used
+        if not odds_found_in_json:
+            if len(tds) > 9:
+                odds_text = tds[9].get_text(strip=True)
+                if odds_text and odds_text not in ("---.-", "**.*", ""):
+                    try:
+                        row_dict["WIN_ODDS"] = float(odds_text)
+                    except ValueError:
+                        pass
+
+            if len(tds) > 10:
+                pop_text = tds[10].get_text(strip=True)
+                if pop_text and pop_text not in ("**", ""):
+                    try:
+                        row_dict["POPULARITY"] = int(pop_text)
+                    except ValueError:
+                        pass
+
         results.append(row_dict)
 
     return results
