@@ -17,6 +17,7 @@ sys.path.append(str(BASE_DIR))
 from WebCrawler.discovery import discover_races, get_all_target_races
 from WeatherCrawler.main import run_weather_crawl
 from netkeiba_auth import get_netkeiba_cookies
+from Reporting.email_report import run_reporting_pipeline
 
 def send_telegram_message(message: str):
     """텔레그램 봇으로 메시지를 전송합니다."""
@@ -42,13 +43,39 @@ LOG_DIR = BASE_DIR / "logs"
 LOG_DIR.mkdir(exist_ok=True)
 date_str = datetime.now().strftime("%Y%m%d")
 LOG_FILE = LOG_DIR / f"{date_str}_Master.log"
+WEBCRAWLER_LOG = LOG_DIR / f"{date_str}_WebCrawler.log"
+
+class Tee(object):
+    def __init__(self, *files):
+        self.files = files
+    def write(self, obj):
+        for f in self.files:
+            try:
+                f.write(obj)
+                f.flush()
+            except:
+                pass
+    def flush(self):
+        for f in self.files:
+            try:
+                f.flush()
+            except:
+                pass
+
+# 로그 파일 오픈 (a 모드)
+master_f = open(LOG_FILE, 'a', encoding='utf-8')
+web_f = open(WEBCRAWLER_LOG, 'a', encoding='utf-8')
+
+# 표준 출력/에러 리다이렉션
+original_stdout = sys.stdout
+sys.stdout = Tee(sys.stdout, master_f, web_f)
+sys.stderr = Tee(sys.stderr, master_f, web_f)
 
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(message)s',
     handlers=[
-        logging.FileHandler(LOG_FILE, encoding='utf-8'),
-        logging.StreamHandler()
+        logging.StreamHandler(original_stdout) # 오리지널 stdout으로 보내면 Tee가 가로채서 파일에도 기록함
     ]
 )
 logger = logging.getLogger("Master")
@@ -80,8 +107,9 @@ def print_menu():
     print(" [ 자동화 인수 (--auto) 설명 ]")
     print(" --auto 2 : 토요일 계획 자동화 (2 -> 6 -> 7 -> AI API 호출)")
     print(" --auto 3 : 일요일 계획 자동화 (3 -> 6 -> 7 -> AI API 호출)")
-    print(" --auto 4 : 지난 토요일 결과 자동화 (1 -> 8 -> 9 수행)")
-    print(" --auto 5 : 지난 일요일 결과 자동화 (1 -> 8 -> 9 수행)")
+    print(" --auto 4 : 지난 토요일 결과 자동화 (1 -> 8 -> 9 수행 + 결과 리포트 메일 발송)")
+    print(" --auto 5 : 지난 일요일 결과 자동화 (1 -> 8 -> 9 수행 + 결과 리포트 메일 발송)")
+    print(" --auto 6 : 지난 주 구간별 기록 자동 업데이트 (금요일 18:00 권장)")
     print("=" * 60)
     print("크롤링 모드를 선택하세요:")
     print("  1. 과거 경기 결과 수집 (날짜+장소 입력 자동 탐색)")
@@ -95,7 +123,8 @@ def print_menu():
     print("  9. [결과] DB 임시 테이블 데이터를 API 테이블로 이관")
     print("-" * 60)
     print("  [ 협업자 전용 도구 ]")
-    print("  10. 경주마 원본 사진 다운로더 (Netkeiba DB 기반 최대 30장)")
+    print("  10. 지난 주 구간별 기록 업데이트 (Lap Time Update)")
+    print("  11. [협업자용] 경주마 원본 사진 다운로더")
     print("=" * 60)
     print("  q. 종료 (Quit)")
     print("=" * 60)
@@ -469,8 +498,51 @@ def run_result_automation_pipeline(mode):
                 processed_combos.append(combo)
         
         send_telegram_message(f"🚀 [{day_name}] 모든 결과 데이터 처리 파이프라인 무사 종료!")
+        
+        # 5. 결과 리포트 자동 생성 및 발송 (Phase 6)
+        for (t_date, t_venue_jp) in processed_combos:
+            if run_reporting_pipeline(t_venue_jp, t_date):
+                send_telegram_message(f"📧 [{t_venue_jp}-{t_date}] 결과 리포트 이메일 발송 완료!")
+            else:
+                send_telegram_message(f"⚠️ [{t_venue_jp}-{t_date}] 예측 메일을 찾지 못해 리포트 발송을 건너뛰었습니다.")
+            
         logger.info(f"\n✅ {day_name} 모든 결과 자동화 작업이 성공적으로 종료되었습니다. 프로그램을 종료합니다.")
         sys.exit(0)
+
+def run_lap_time_automation():
+    """지난 주말(토, 일)의 구간 기록을 자동으로 수집하여 DB에 반영합니다. (1번 모드 로직 사용)"""
+    today = datetime.now()
+    # 지난주 일요일: 오늘 기준 가장 가까운 과거 일요일
+    days_to_sunday = (today.weekday() - 6) % 7
+    if days_to_sunday == 0: days_to_sunday = 7
+    
+    last_sunday = today - timedelta(days=days_to_sunday)
+    last_saturday = last_sunday - timedelta(days=1)
+    
+    target_dates = [last_saturday.strftime("%Y%m%d"), last_sunday.strftime("%Y%m%d")]
+    
+    logger.info(f"🚀 지난 주말 구간 기록 자동 업데이트 시작 (대상: {target_dates})")
+    
+    for date in target_dates:
+        # 해당 날짜의 경기장 URL 탐색
+        found_races = discover_races(date)
+        if not found_races:
+            logger.warning(f"⚠️ {date}에 탐색된 경기가 없습니다.")
+            continue
+
+        for r in found_races:
+            venue_jp = r['venue']
+            # VENUE_MAP에서 한글 경기장명을 찾아 로그에 표시 (선택사항)
+            venue_kor = next((k for k, v in VENUE_MAP.items() if v == venue_jp), venue_jp)
+            
+            logger.info(f"\n--- 자동 업데이트 시도: {date} {venue_kor} ({r['url']}) ---")
+            # 1번 모드 수집 로직 실행
+            run_mode_1_logic(r['url'])
+            
+    send_telegram_message(f"✅ 지난 주말({target_dates[0]}~{target_dates[1]}) 구간 기록 자동 업데이트 완료!")
+    logger.info("✅ 모든 자동 업데이트 작업이 완료되었습니다.")
+
+from datetime import timedelta
 
 def run_mode_1():
     """1번 모드: 날짜와 경기장 한글명을 입력받아 자동 탐색 후 수집"""
@@ -717,15 +789,50 @@ def run_mode_9(date=None, venue=None, max_retries=3):
     return False
 
 def run_mode_10():
-    """10번 모드: 협업자용 - 말 원본 사진 다운로더"""
+    """10번 모드: 특정 날짜와 경기장의 구간 기록(Lap Time) 업데이트 (기존 1번 모드 로직 활용)"""
     print("\n" + "┌" + "─" * 45 + "┐")
-    print("│         [ 협업자용: 사진 다운로더 ]          │")
+    print("│      [ 지난 주 구간 기록 업데이트 입력 ]       │")
     print("├" + "─" * 45 + "┤")
     print("│  1. 날짜 입력 (형식: YYYYMMDD 예: 20260419)  │")
     print("│  2. 경기장 이름 (도쿄, 나카야마, 한신, 교토) │")
     print("└" + "─" * 45 + "┘")
     
-    date_input = input("\n📅 수집할 날짜를 입력하세요: ").strip()
+    date_input = input("\n📅 업데이트할 날짜를 입력하세요: ").strip()
+    if not re.match(r"^\d{8}$", date_input):
+        print("❌ 오류: 날짜 형식이 올바르지 않습니다.")
+        return
+    venue_input = input("🏟️ 경기장 이름을 입력하세요 (도쿄/나카야마/한신/교토): ").strip()
+    if venue_input not in VENUE_MAP:
+        print(f"❌ 오류: '{venue_input}'은(는) 지원하지 않는 경기장입니다.")
+        return
+
+    japanese_venue = VENUE_MAP[venue_input]
+    logger.info(f"🔍 [Lap Time 업데이트] 자동 탐색 시작: {date_input} {venue_input}({japanese_venue})")
+
+    # discovery.py 기능을 활용해 1R URL 확보
+    found_races = discover_races(date_input)
+    target_race = next((r for r in found_races if r['venue'] == japanese_venue), None)
+
+    if not target_race:
+        print(f"⚠️ 결과: 해당 날짜({date_input})에 {venue_input} 경기가 열리지 않았거나 찾을 수 없습니다.")
+        return
+
+    logger.info(f"🎯 탐색 성공! 1경기 URL: {target_race['url']}")
+    
+    # 결과 수집 프로세스 가동 (1번 모드 로직인 run_mode_1_logic 사용)
+    run_mode_1_logic(target_race['url'])
+    logger.info("\n========== 업데이트 작업이 완료되었습니다. ==========")
+
+def run_mode_11():
+    """11번 모드: [협업자용] 경주마 원본 사진 다운로더"""
+    print("\n" + "┌" + "─" * 45 + "┐")
+    print("│      [ 경주마 원본 사진 다운로더 대상 입력 ]     │")
+    print("├" + "─" * 45 + "┤")
+    print("│  1. 날짜 입력 (형식: YYYYMMDD 예: 20260419)  │")
+    print("│  2. 경기장 이름 (도쿄, 나카야마, 한신, 교토) │")
+    print("└" + "─" * 45 + "┘")
+    
+    date_input = input("\n📅 대상 날짜를 입력하세요: ").strip()
     if not re.match(r"^\d{8}$", date_input):
         print("❌ 오류: 날짜 형식이 올바르지 않습니다.")
         return
@@ -761,7 +868,7 @@ def print_discovery_results(targets):
 def main():
     import argparse
     parser = argparse.ArgumentParser(description="넷케이바 자동화 마스터 파이프라인")
-    parser.add_argument("--auto", choices=["2", "3", "4", "5"], help="자동화 모드 실행 (2:토 계획(2-6-7-AI), 3:일 계획(3-6-7-AI), 4:토 결과(1-8-9), 5:일 결과(1-8-9))")
+    parser.add_argument("--auto", choices=["2", "3", "4", "5", "6"], help="자동화 모드 실행 (2:토 계획, 3:일 계획, 4:토 결과, 5:일 결과, 6:지난주 구간기록)")
     args = parser.parse_args()
 
     # 0. 자동화 모드 체크
@@ -770,6 +877,9 @@ def main():
         return
     elif args.auto in ["4", "5"]:
         run_result_automation_pipeline(args.auto)
+        return
+    elif args.auto == "6":
+        run_lap_time_automation()
         return
 
     # 0. 넷케이바 프리미엄 세션 자동 확인
@@ -785,13 +895,13 @@ def main():
 
     while True:
         print_menu()
-        mode = input("선택하실 번호를 입력하세요 (1~9 또는 q): ").strip().lower()
+        mode = input("선택하실 번호를 입력하세요 (1~11 또는 q): ").strip().lower()
         
         if mode == 'q':
             print("\n프로그램을 종료합니다.")
             break
             
-        if mode not in ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"]:
+        if mode not in [str(i) for i in range(1, 12)]:
             print("\n[오류] 잘못된 입력입니다.")
             continue
 
@@ -834,6 +944,8 @@ def main():
                 run_mode_9()
             elif mode == "10":
                 run_mode_10()
+            elif mode == "11":
+                run_mode_11()
             
             logger.info("\n[성공] 파이프라인 작업이 종료되었습니다.")
         except KeyboardInterrupt:

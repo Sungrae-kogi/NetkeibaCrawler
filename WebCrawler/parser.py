@@ -6,7 +6,7 @@ HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/120.0 Safari/537.36"
+        "Chrome/124.0.0.0 Safari/537.36"
     ),
     "Referer": "https://race.netkeiba.com/",
 }
@@ -30,10 +30,18 @@ def sanitize_text(val):
     return val
 
 
-def parse_cookie_string(raw_cookie: str) -> dict:
+def parse_cookie_string(raw_cookie) -> dict:
+    """
+    쿠키가 문자열(key=value; ...)이면 딕셔너리로 변환하고,
+    이미 딕셔너리라면 그대로 반환합니다.
+    """
+    if isinstance(raw_cookie, dict):
+        return raw_cookie
+
     cookie_dict = {}
-    if not raw_cookie:
+    if not raw_cookie or not isinstance(raw_cookie, str):
         return cookie_dict
+
     for c in raw_cookie.split(';'):
         if '=' in c:
             key, value = c.strip().split('=', 1)
@@ -230,7 +238,10 @@ def parse_premium_lap_summary(soup: BeautifulSoup) -> dict:
         return lap_data
 
     MAX_DISTANCE = 20
-    horse_rows = target_table.find_all('tr', class_='HorseList')
+    horse_rows = target_table.select('tbody tr')
+    if not horse_rows:
+        # tbody가 없는 단순 구조일 경우 대비
+        horse_rows = target_table.find_all('tr')[1:] 
 
     for row in horse_rows:
         horse_link = row.select_one('.Horse_Info a')
@@ -254,27 +265,8 @@ def parse_premium_lap_summary(soup: BeautifulSoup) -> dict:
     return lap_data
 
 
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
-
-def parse_race_page_rows(url: str, raw_cookie: str = "") -> list[dict]:
-    cookie_dict = parse_cookie_string(raw_cookie)
-    
-    # 재시도 전략 설정
-    retry_strategy = Retry(
-        total=3,
-        backoff_factor=1,
-        status_forcelist=[429, 500, 502, 503, 504],
-        allowed_methods=["GET"]
-    )
-    adapter = HTTPAdapter(max_retries=retry_strategy)
-    http = requests.Session()
-    http.mount("https://", adapter)
-    http.mount("http://", adapter)
-    
-    res = http.get(url, headers=HEADERS, cookies=cookie_dict, timeout=15)
-    res.encoding = "EUC-JP"
-    soup = BeautifulSoup(res.text, "lxml")
+def parse_race_page_rows(url: str, html: str) -> list[dict]:
+    soup = BeautifulSoup(html, "lxml")
 
     meta = parse_race_item02(soup, url=url)
     m = re.search(r"race_id=(\d+)", url)

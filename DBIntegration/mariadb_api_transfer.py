@@ -7,10 +7,21 @@ from pathlib import Path
 import pymysql
 
 # 로깅 설정
-logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
-logger = logging.getLogger("API_Transfer")
-
 BASE_DIR = Path(__file__).resolve().parent
+LOG_DIR = BASE_DIR.parent / "logs"
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+date_str = time.strftime("%Y%m%d")
+LOG_FILE = LOG_DIR / f"{date_str}_DBTransfer_Plan.log"
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    handlers=[
+        logging.FileHandler(LOG_FILE, encoding='utf-8'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger("API_Transfer")
 
 def load_db_config():
     CONFIG_PATH = BASE_DIR / "db_config.json"

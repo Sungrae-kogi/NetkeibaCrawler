@@ -58,9 +58,15 @@ def run_auto_login():
             page.type("input[name='pswd']", user_pw, delay=50)
             page.click("input[alt='ログイン']")
             
-            # 로그인 버튼 클릭 후 충분한 대기 시간 부여
-            print("⏳ 로그인 처리 및 쿠키 저장 대기 중 (5초)...")
-            time.sleep(5)
+            print("⏳ 로그인 처리 중... (완료를 확인합니다. 최대 60초 대기)")
+            print("💡 만약 브라우저에 캡차(로봇이 아닙니다)가 뜨면 직접 마우스로 해결해주세요!")
+            
+            # 로그인 폼이 화면에서 사라질 때까지 대기 (성공적으로 넘어갔음을 의미)
+            page.wait_for_selector("input[name='login_id']", state="hidden", timeout=60000)
+            
+            # 안전하게 네트워크 요청이 잦아들 때까지 추가 대기
+            page.wait_for_load_state("networkidle", timeout=15000)
+            time.sleep(2) # 쿠키 기록용 여유 시간
             
             print("✅ 자동 로그인 절차 완료 (강제 저장)")
             context.storage_state(path=str(SESSION_PATH))

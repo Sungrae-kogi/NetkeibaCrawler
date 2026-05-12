@@ -21,7 +21,8 @@ logging.basicConfig(
     handlers=[
         logging.FileHandler(LOG_FILE, encoding='utf-8'),
         logging.StreamHandler()
-    ]
+    ],
+    force=True
 )
 logger = logging.getLogger("WebCrawler")
 
@@ -59,6 +60,9 @@ def save_rows_to_csv(rows: list[dict], filename: str):
     logger.info(f"CSV 저장 완료(Overwrite): {filepath} (총 {len(rows)} rows)")
 
 
+from playwright.sync_api import sync_playwright
+
+
 if __name__ == "__main__":
     if len(sys.argv) > 1:
         start_url = sys.argv[1]
@@ -66,18 +70,38 @@ if __name__ == "__main__":
         start_url = "https://race.netkeiba.com/race/result.html?race_id=202606030701&rf=race_list"
     
     max_races = 12
-    my_premium_cookie = "_ga=GA1.3.43087749.1773647889; _im_vid=01KKTTE8FD2BJR6P3H96E0FTBR; _im_vid=01KKTTE8FD2BJR6P3H96E0FTBR; _yjsu_yjad=1773648701.b1fbd492-9ba0-4398-a06f-55a6dea581d8; _im_uid.3929=i.7USgiS3PQiyKGfZggszH_A; __binsUID=4fdc557e-4947-4bc9-802c-7bac720bd869; ga_netkeiba_member=Free; mbox=PC#f654e9904819443fbf8393e21b328403.32_0#1838098145|session#00bc61b2b3174550a8b800e06f906305#1774855205; cto_bidid=o33Lpl85SkdlaHBUZnJSJTJGUSUyQjI4OEVRZHRLdHRlNTBFSVJrRERDSE9BNERRJTJGbks1M1RZSSUyQkFOZXgzZWNWakVNZnBlbnlBRjJVeXJjM1Y1cnlvZnlSdHF2RiUyQjczNkxoYXd4ekl1MDJ3dHdqZHNsQlElM0Q; nd_ua=Windows%2010.0.0%3B%20%20Google%20Chrome%2F147%20Chromium%2F147; _gid=GA1.3.1485614291.1776219695; nkrace=2af769b432a50c024cf6e2a057601812; _ga_TES9RDDPWZ=GS2.1.s1776220614$o3$g0$t1776220614$j60$l0$h0; _ga_X3WZ5EPSWL=GS2.1.s1776220614$o3$g0$t1776220614$j60$l1$h2006083052; _ga_W09XKKVWC0=GS2.1.s1776220614$o3$g0$t1776220614$j60$l0$h0; _ga_XNS3WYDQBF=GS2.1.s1776220614$o3$g0$t1776220614$j60$l0$h0; _clck=1mprhi3%5E2%5Eg5f%5E0%5E2301; user_odds_20260422=ODUL%3A7b34b8714e71cf532f8a793862d6ce3408; umai_trial_out=1; __utma=48494009.1363941113.1773732823.1774853079.1776823361.10; __utmc=48494009; __utmz=48494009.1776823361.10.3.utmccn=(referral)|utmcsr=info.netkeiba.com|utmcct=/|utmcmd=referral; _gid=GA1.2.1641444119.1776823361; _ga=GA1.1.43087749.1773647889; cto_bundle=YgIwZ194dTdreER2ZEhFMWxSNzdNNkhGcnRYN0lZNUxIWXRuY3FsSDAxRlFRJTJCZ3VMSmNCbFhoMzhKV28zS0pzUkV3TFRNRGNQV1MlMkZaS1VRQkxRc0sxaVMyVGZkWTZvcW1mZVhIQWJGZFJ6Z050aHNRc3Y0blZiT0YwaE45VWdzR0VNZmFMS1NkNUN5WUJNUGZta0pXcnBuaHh3JTNEJTNE; FCCDCF=%5Bnull%2Cnull%2Cnull%2Cnull%2Cnull%2Cnull%2C%5B%5B32%2C%22%5B%5C%22171b98e3-9a81-4404-b843-acda29dda790%5C%22%2C%5B1776647267%2C294000000%5D%5D%22%5D%5D%5D; __gads=ID=5fae409398165a83:T=1776647265:RT=1776832036:S=ALNI_MZRyNcCxYZ7oaRjwAgoD06q68QIpw; __gpi=UID=0000126dca115b9e:T=1776647265:RT=1776832036:S=ALNI_MZtr55Ulg5SUp23Vq92U3rntK7USA; __eoi=ID=bccac6a98451cd0e:T=1776647265:RT=1776832036:S=AA-AfjaN75qD8eQR5bdFFPHwzlq6; FCNEC=%5B%5B%22AKsRol__pTfDDVffgLf3WV2fo4hWv1z_Nu806fLN0bhPf8CnxvCVc71e5dkxHBseok5SDTxb4WzcIb6CpFMFwGElcI54OyKOt0uOZ0VEP5jH2o_HYqnDCoJyLgc8c-PC9tbs63dNH9eV56rk6FdPhfUcmah5VqpnpQ%3D%3D%22%5D%5D; _clsk=1o97fmk%5E1776833958304%5E9%5E0%5Eb.clarity.ms%2Fcollect; _ga_B2L5N4JT6V=GS2.1.s1776833959$o13$g0$t1776833959$j60$l0$h0; _ga_BQDXGQBP6X=GS2.1.s1776833959$o13$g0$t1776833959$j60$l1$h1978159112; netkeiba=TnprMU56TXpOUT09; nkauth=f9c963fff3b3dbc54f78c0b339e65dc4d699651efa79f2995c348ae9; url=https%3A%2F%2Frace.netkeiba.com%2Frace%2Fshutuba.html%3Frace_id%3D202605020105"
-    all_rows = []
     
+    state_path = BASE_DIR.parent / "storage_state.json"
+    
+    all_rows = []
     any_failed = False
-    for rcno, url in make_race_urls(start_url, max_races=max_races):
-        try:
-            rows = parse_race_page_rows(url, raw_cookie=my_premium_cookie)
-            all_rows.extend(rows)
-            logger.info(f"수집: {url} -> {len(rows)} rows")
-        except Exception as e:
-            logger.error(f"실패: {url} / {e}")
-            any_failed = True
+    
+    logger.info("🔑 Playwright 프리미엄 세션을 로드하여 결과 수집을 시작합니다...")
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        context_args = {}
+        if state_path.exists():
+            context_args["storage_state"] = str(state_path)
+            
+        context = browser.new_context(**context_args)
+        page = context.new_page()
+        
+        for rcno, url in make_race_urls(start_url, max_races=max_races):
+            try:
+                page.goto(url, timeout=30000)
+                # 안정적인 로드를 위해 대기
+                page.wait_for_load_state("domcontentloaded")
+                
+                # HTML 추출 후 파서에 전달
+                html = page.content()
+                rows = parse_race_page_rows(url, html=html)
+                all_rows.extend(rows)
+                logger.info(f"수집: {url} -> {len(rows)} rows")
+            except Exception as e:
+                logger.error(f"실패: {url} / {e}")
+                any_failed = True
+                
+        browser.close()
 
     if all_rows:
         first_row = all_rows[0]
