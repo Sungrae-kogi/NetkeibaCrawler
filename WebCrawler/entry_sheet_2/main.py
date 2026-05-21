@@ -31,6 +31,14 @@ def main():
             start_race_id = m.group(1)
             
     prefix = start_race_id[:-2]
+    
+    # URL에서 시작 경주 번호 추출 (기본값 1)
+    try:
+        start_idx = int(start_race_id[-2:])
+        if start_idx < 1 or start_idx > 12: start_idx = 1
+    except ValueError:
+        start_idx = 1
+        
     all_entries = []
 
     # 자체 메타데이터 저장용 폴더
@@ -46,11 +54,11 @@ def main():
         print(f"⚠️ 세션 확보 실패 (일반 모드로 진행): {e}")
         cookies = {}
 
-    print(f"========== api_entry_sheet_2 수집 시작 (Base ID: {prefix}) ==========")
+    print(f"========== api_entry_sheet_2 수집 시작 (Base ID: {prefix}, {start_idx}R ~ 12R) ==========")
     
     any_failed = False
-    # 전 경기(1~12경주) 수집
-    for i in range(1, 13):
+    # 추출된 시작 번호부터 12경주까지 수집
+    for i in range(start_idx, 13):
         race_id = f"{prefix}{i:02d}"
         url = base_url_template.format(race_id)
         
@@ -62,8 +70,8 @@ def main():
             
             soup = BeautifulSoup(r.text, "lxml")
             if not soup.select_one(".RaceList_Item02"):
-                print(f"  -> 경기가 존재하지 않습니다. 당일 순회 종료.")
-                break
+                print(f"  -> 경기가 존재하지 않습니다. 건너뜁니다.")
+                continue
                 
             # Fetch Odds JSON data
             odds_url = f"https://race.netkeiba.com/api/api_get_jra_odds.html?race_id={race_id}&type=1&action=init"
@@ -98,7 +106,7 @@ def main():
             "MEET", "RCDATE", "RCDAY", "RCNO", "WAKU", "CHULNO", "HRNAME", "HRNO",
             "SEX", "AGE", "WGBUDAM", "JKNAME", "JKNO",
             "TRNAME", "TRNO", "TRACK_TYPE", "DIRECTION", "RCDIST", "DUSU",
-            "RANK", "AGECOND", "STTIME", "RCNAME", "CHAKSUN1",
+            "RANK", "RCGRD", "AGECOND", "STTIME", "RCNAME", "CHAKSUN1",
             "CHAKSUN2", "CHAKSUN3", "CHAKSUN4", "CHAKSUN5",
             "POPULARITY", "WIN_ODDS"
         ]
@@ -117,8 +125,12 @@ def main():
 
         # PK 추출 및 분배 저장 로직
         pks = {"HRNO": set(), "JKNO": set(), "TRNO": set()}
+        hr_names = {}
         for row in all_entries:
-            if row.get("HRNO"): pks["HRNO"].add(row["HRNO"])
+            if row.get("HRNO"): 
+                pks["HRNO"].add(row["HRNO"])
+                if row.get("HRNAME"):
+                    hr_names[row["HRNO"]] = row["HRNAME"].strip()
             if row.get("JKNO"): pks["JKNO"].add(row["JKNO"])
             if row.get("TRNO"): pks["TRNO"].add(row["TRNO"])
             
@@ -134,9 +146,14 @@ def main():
             out_file = folder_path / f"{key}_{final_meet}_{final_date}_list.csv"
             with open(out_file, "w", newline="", encoding="utf-8-sig") as f:
                 writer = csv.writer(f)
-                writer.writerow([key])
-                for item in sorted(pks[key]):
-                    writer.writerow([item])
+                if key == "HRNO":
+                    writer.writerow(["HRNO", "HRNAME"])
+                    for hrno in sorted(pks[key]):
+                        writer.writerow([hrno, hr_names.get(hrno, "")])
+                else:
+                    writer.writerow([key])
+                    for item in sorted(pks[key]):
+                        writer.writerow([item])
                     
         print(f"[완료] PK 분배 저장: HRNO({len(pks['HRNO'])}), JKNO({len(pks['JKNO'])}), TRNO({len(pks['TRNO'])})")
     else:

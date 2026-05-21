@@ -505,6 +505,17 @@ def run_result_automation_pipeline(mode):
                 send_telegram_message(f"📧 [{t_venue_jp}-{t_date}] 결과 리포트 이메일 발송 완료!")
             else:
                 send_telegram_message(f"⚠️ [{t_venue_jp}-{t_date}] 예측 메일을 찾지 못해 리포트 발송을 건너뛰었습니다.")
+                
+        # 6. 한국(서울, 부산, 제주) 리포트 자동 생성 및 발송 시도
+        try:
+            from Reporting.email_report_kor import run_kor_reporting_pipeline
+            for kor_venue in ["서울", "부산", "제주"]:
+                if run_kor_reporting_pipeline(kor_venue):
+                    send_telegram_message(f"📧 [{kor_venue}] 한국 결과 리포트 이메일 발송 완료!")
+                else:
+                    logger.info(f"⚠️ [{kor_venue}] 최근 예측 메일이 없거나 처리할 수 없어 리포트 발송을 건너뜁니다.")
+        except Exception as e:
+            logger.error(f"한국 결과 리포트 발송 중 에러 발생: {e}")
             
         logger.info(f"\n✅ {day_name} 모든 결과 자동화 작업이 성공적으로 종료되었습니다. 프로그램을 종료합니다.")
         sys.exit(0)

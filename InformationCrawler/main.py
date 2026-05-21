@@ -6,7 +6,8 @@ import requests
 import re
 import msvcrt
 import logging
-from datetime import datetime
+import pymysql
+from datetime import datetime, timedelta
 from bs4 import BeautifulSoup
 from pathlib import Path
 from requests.adapters import HTTPAdapter
@@ -16,10 +17,11 @@ BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
 LOG_DIR = BASE_DIR.parent / "logs"
 CACHE_FILE = DATA_DIR / "seen_cache.json"
-CSV_FILE = DATA_DIR / "extracted_info.csv"
-CANCEL_CSV_FILE = DATA_DIR / "cancel_extracted_info.csv"
 
+# 날짜별 파일명 생성
 date_str = datetime.now().strftime("%Y%m%d")
+CSV_FILE = DATA_DIR / f"extracted_info_{date_str}.csv"
+CANCEL_CSV_FILE = DATA_DIR / f"cancel_extracted_info_{date_str}.csv"
 LOG_FILE = LOG_DIR / f"{date_str}_Information.log"
 
 # 로깅 설정
@@ -65,6 +67,150 @@ def save_cache(cache_set):
 def generate_hash(text):
     """문자열에 대한 MD5 해시값을 생성합니다."""
     return hashlib.md5(text.encode('utf-8')).hexdigest()
+
+def load_db_config():
+    """DBIntegration/db_config.json에서 설정 로드"""
+    config_path = BASE_DIR.parent / "DBIntegration" / "db_config.json"
+    if not config_path.exists():
+        logger.error(f"DB 설정 파일을 찾을 수 없습니다: {config_path}")
+        return None
+    with open(config_path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+def get_db_connection(config):
+    """MariaDB 연결 생성"""
+    try:
+        return pymysql.connect(
+            host=config['host'],
+            port=config['port'],
+            user=config['user'],
+            password=config['password'],
+            database=config['database'],
+            charset=config.get('charset', 'utf8mb4'),
+            cursorclass=pymysql.cursors.DictCursor
+        )
+    except Exception as e:
+        logger.error(f"DB 연결 중 오류 발생: {e}")
+        return None
+
+def send_telegram_message(message):
+    """config.json 설정을 참조하여 텔레그램 메시지 발송"""
+    config_path = BASE_DIR.parent / "config.json"
+    if not config_path.exists():
+        return
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            config = json.load(f)
+        bot_token = config.get("TELEGRAM_BOT_TOKEN")
+        chat_id = config.get("TELEGRAM_CHAT_ID")
+        if bot_token and chat_id:
+            url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+            payload = {"chat_id": chat_id, "text": message}
+            requests.post(url, json=payload, timeout=10)
+    except Exception as e:
+        logger.error(f"텔레그램 발송 중 오류: {e}")
+
+def get_rcdate_from_day(rcday_kanji):
+    """요일(土, 日 등)을 바탕으로 이번 주 실제 날짜(YYYYMMDD)를 계산합니다."""
+    day_map = {'月': 0, '火': 1, '水': 2, '木': 3, '金': 4, '土': 5, '日': 6}
+    target_idx = day_map.get(rcday_kanji)
+    if target_idx is None:
+        return None
+    
+    today = datetime.now().date()
+    # 이번 주 월요일 계산
+    monday = today - timedelta(days=today.weekday())
+    target_date = monday + timedelta(days=target_idx)
+    return int(target_date.strftime("%Y%m%d"))
+
+def lookup_hrno(conn, rcdate, meet, rcno, chulno):
+    """api_entry_sheet_2 테이블에서 RCDATE, MEET, RCNO, CHULNO로 HRNO를 조회합니다."""
+    try:
+        with conn.cursor() as cursor:
+            sql = """
+                SELECT HRNO FROM api_entry_sheet_2 
+                WHERE RCDATE = %s AND MEET = %s AND RCNO = %s AND CHULNO = %s 
+                LIMIT 1
+            """
+            cursor.execute(sql, (rcdate, meet, rcno, chulno))
+            result = cursor.fetchone()
+            return result['HRNO'] if result else ""
+    except Exception as e:
+        logger.error(f"HRNO 조회 중 오류: {e}")
+        return ""
+
+def sync_cancel_to_db(records):
+    """파싱된 레코드를 DB에 적재하고 필요 시 알림을 보냅니다."""
+    db_config = load_db_config()
+    if not db_config:
+        return
+    
+    conn = get_db_connection(db_config)
+    if not conn:
+        return
+    
+    try:
+        new_insert_count = 0
+        for rec in records:
+            rcdate = rec.get("RCDATE")
+            meet = rec.get("MEET")
+            rcno = rec.get("RCNO")
+            chulno = rec.get("CHULNO")
+            hrname = rec.get("HRNAME")
+            category = rec.get("CATEGORY")
+            
+            # 1. HRNO 조회
+            hrno = lookup_hrno(conn, rcdate, meet, rcno, chulno)
+            
+            # 2. DB 삽입 (이름/사유 등이 바뀔 수 있으므로 UPDATE 처리)
+            with conn.cursor() as cursor:
+                sql = """
+                    INSERT INTO api_race_horse_cancel_info_1 
+                    (CHULNO, HRNAME, HRNO, MEET, RCDATE, RCNO, REASON) 
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    ON DUPLICATE KEY UPDATE 
+                        HRNAME = VALUES(HRNAME),
+                        MEET = VALUES(MEET),
+                        REASON = VALUES(REASON)
+                """
+                cursor.execute(sql, (chulno, hrname, hrno, meet, rcdate, rcno, category))
+                affected = cursor.rowcount
+            
+            # affected == 1: 신규 삽입, affected == 2: 수정됨, affected == 0: 변화 없음
+            # 사용자의 요청에 따라 '신규 삽입'인 경우에만 알림 발송
+            if affected == 1:
+                new_insert_count += 1
+                conn.commit()
+                # 3. 알림 발송
+                msg = f"🚩 [신규 취소/제외/중지 정보]\n\n날짜: {rcdate}\n경주: {meet} {rcno}R\n마번: {chulno}번 ({hrname})\n구분: {category}"
+                logger.info(f"DB 신규 적재 완료 및 알림 발송: {hrname} ({rcdate})")
+                send_telegram_message(msg)
+                
+                # 4. 외부 API 호출 (출전취소 반영 시스템 트리거) - 현재 비활성화됨
+                # try:
+                #     deploy_url = f"http://192.168.0.30/schedule/deploy/cancelHorse.do?meet={meet}"
+                #     logger.info(f"🚀 외부 API 호출 시도: {deploy_url}")
+                #     resp = requests.get(deploy_url, timeout=15)
+                #     if resp.status_code == 200:
+                #         logger.info(f"✅ 외부 API 호출 성공 (응답: {resp.text[:50]})")
+                #     else:
+                #         logger.warning(f"⚠️ 외부 API 호출 실패 (상태코드: {resp.status_code})")
+                # except Exception as e:
+                #     logger.error(f"외부 API 호출 중 오류 발생: {e}")
+            elif affected == 2:
+                conn.commit()
+                logger.info(f"🔄 기존 정보 수정됨 (알림 미발송): {hrname} ({rcdate})")
+            else:
+                logger.info(f"⏭️ 중복 패스 (변화 없음): {rcdate} {meet} {rcno}R {hrname}")
+                
+        if new_insert_count > 0:
+            logger.info(f"✅ 총 {new_insert_count}건의 신규 데이터가 DB에 적재되었습니다.")
+            
+    except Exception as e:
+        logger.error(f"DB 동기화 중 오류 발생: {e}")
+        conn.rollback()
+    finally:
+        conn.close()
 
 def fetch_and_parse():
     logger.info("넷케이바 Information 갱신 내역 확인 중...")
@@ -119,15 +265,17 @@ def fetch_and_parse():
         logger.info(f"🎉 새로운 정보 {len(new_records)}건이 발견되어 저장합니다!")
         save_csv(new_records)
         
-        # [데이터 분리 추출] 출주 취소인 건만 따로 파싱하여 저장
+        # [데이터 분리 추출] 취소/제외/중지 항목만 따로 파싱하여 저장
         cancel_records = []
         for rec in new_records:
-            if rec["CATEGORY"] == "出走취소" or rec["CATEGORY"] == "出走取消":
+            if any(k in rec["CATEGORY"] for k in ["取消", "除外", "中止"]):
                 cancel_records.append(parse_cancel_record(rec))
                 
         if cancel_records:
             save_cancel_csv(cancel_records)
-            logger.info(f"     (출주 취소 데이터 {len(cancel_records)}건 파싱 및 분리 저장 완료)")
+            logger.info(f"     (취소/제외/중지 데이터 {len(cancel_records)}건 파싱 완료)")
+            # 실시간 DB 동기화 실행
+            sync_cancel_to_db(cancel_records)
             
         save_cache(seen_cache)
         for rec in reversed(new_records):
@@ -154,7 +302,7 @@ def save_csv(records):
             writer.writerow(row)
 
 def parse_cancel_record(record):
-    """出走取消 타입의 데이터를 정규식으로 분해하여 새 구조로 반환합니다."""
+    """취소/제외/중지 타입의 데이터를 정규식으로 분해하여 새 구조로 반환합니다."""
     out = {
         "CRAWL_TIME": record["CRAWL_TIME"],
         "CATEGORY": record["CATEGORY"],
@@ -177,21 +325,24 @@ def parse_cancel_record(record):
         out["RCNO"] = m_place.group(3)
         
     # DETAILS 파싱: 예) 2番 エイコーンドリーム (4/18 12:43) 
-    # -> CHULNO=2, HRNAME=エイコーンドリーム, 날짜추출 후 RCDATE=20260418 생성
+    # -> CHULNO=2, HRNAME=エイコーンドリーム
     fixed_details = details.replace('\xa0', ' ')
-    m_details = re.search(r"(\d+)番\s*([^\(]+?)\s*\(\s*(\d+)/(\d+)", fixed_details)
+    # reprocess_old_csv.py에서 검증된 더 유연한 정규식 사용
+    m_details = re.search(r"(\d+)番\s*([^\(]+)", fixed_details)
     if m_details:
         out["CHULNO"] = m_details.group(1)
         out["HRNAME"] = m_details.group(2).strip()
-        month = int(m_details.group(3))
-        day = int(m_details.group(4))
-        year = datetime.now().year
-        out["RCDATE"] = f"{year}{month:02d}{day:02d}"
         
+    # RCDATE 계산 (RCDAY 요일 기준)
+    if out["RCDAY"]:
+        calculated_date = get_rcdate_from_day(out["RCDAY"])
+        if calculated_date:
+            out["RCDATE"] = calculated_date
+            
     return out
 
 def save_cancel_csv(records):
-    """파싱된 出走取消 데이터를 별도의 CSV(cancel_extracted_info.csv)에 누적 저장합니다."""
+    """파싱된 취소/제외/중지 데이터를 별도의 CSV(cancel_extracted_info.csv)에 누적 저장합니다."""
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     file_exists = CANCEL_CSV_FILE.exists()
     
@@ -230,8 +381,8 @@ def main():
             time.sleep(10)
             continue
 
-        logger.info("1시간 뒤에 다시 확인합니다... (대기 중, 중단하고 메뉴로 돌아가려면 'q' 입력)\n")
-        if sleep_with_cancel(3600):
+        logger.info("30분 뒤에 다시 확인합니다... (대기 중, 중단하고 메뉴로 돌아가려면 'q' 입력)\n")
+        if sleep_with_cancel(1800):
             logger.info("\n[안내] 사용자에 의해 모니터링 대기가 중단되었습니다.")
             break
 

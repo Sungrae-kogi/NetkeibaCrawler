@@ -1,5 +1,6 @@
 import os
 import csv
+import shutil
 import asyncio
 import argparse
 import logging
@@ -73,14 +74,33 @@ def log_failed_hrno(hrno, horse_name, reason):
     except Exception as e:
         logger.error(f"실패 기록 저장 중 오류: {e}")
 
-async def _download_photos_from_list(page, target_hrno, horse_name, save_dir, max_images):
+async def _download_photos_from_list(page, target_hrno, horse_name, save_dir, max_images, is_target=False):
     photo_list_url = f"https://db.netkeiba.com/photo/list.html?id={target_hrno}"
     logger.info(f"[{target_hrno}] 사진 목록 접속: {photo_list_url}")
-    photo_list_res = await page.goto(photo_list_url, timeout=30000)
-    if photo_list_res and photo_list_res.status in [403, 503]:
-        logger.warning(f"[{target_hrno}] 사진 목록 접속 시 403 차단. VPN 재연결...")
-        reconnect_vpn()
-        await page.goto(photo_list_url, timeout=30000)
+    
+    max_list_retries = 3
+    page_loaded = False
+    
+    for attempt in range(1, max_list_retries + 1):
+        try:
+            photo_list_res = await page.goto(photo_list_url, timeout=30000)
+            if photo_list_res:
+                if photo_list_res.status in [403, 503, 502, 504]:
+                    logger.warning(f"⚠️ [{target_hrno}] 사진 목록 접속 차단(상태코드 {photo_list_res.status}). VPN 재연결 시도 ({attempt}/{max_list_retries})")
+                    reconnect_vpn()
+                    continue
+            page_loaded = True
+            break
+        except PlaywrightTimeoutError:
+            logger.warning(f"⚠️ [{target_hrno}] 사진 목록 접속 타임아웃 발생. VPN 재연결 시도 ({attempt}/{max_list_retries})")
+            reconnect_vpn()
+        except Exception as e:
+            logger.warning(f"⚠️ [{target_hrno}] 사진 목록 접속 오류: {e} ({attempt}/{max_list_retries})")
+            await asyncio.sleep(random.uniform(2.0, 4.0))
+
+    if not page_loaded:
+        logger.error(f"❌ [{target_hrno}] 사진 목록 접속 최종 실패.")
+        return -1
     
     links = await page.evaluate('''() => {
         const anchors = Array.from(document.querySelectorAll('a'));
@@ -92,19 +112,20 @@ async def _download_photos_from_list(page, target_hrno, horse_name, save_dir, ma
     unique_links = list(dict.fromkeys(links))
     
     if not unique_links:
-        logger.warning(f"[{target_hrno}] 등록된 사진이 없거나 구조가 변경되었습니다.")
-        log_failed_hrno(target_hrno, horse_name, "등록된 사진이 없거나 구조가 변경됨")
-        return False
+        logger.info(f"[{target_hrno}] 등록된 사진이 없습니다 (True Zero).")
+        return 0
         
     target_links = unique_links[:max_images]
     logger.info(f"[{target_hrno}] 총 {len(unique_links)}개 사진 중 {len(target_links)}개 다운로드 시도")
     
+    downloaded_count = 0
     for idx, link in enumerate(target_links, start=1):
         img_filename = f"{horse_name}_{idx:02d}.jpg"
         img_path = save_dir / img_filename
         
         if img_path.exists():
             logger.info(f"[{target_hrno}] 이미 존재함 (건너뜀): {img_filename}")
+            downloaded_count += 1
             continue
             
         delay = random.uniform(1.5, 3.0)
@@ -122,6 +143,7 @@ async def _download_photos_from_list(page, target_hrno, horse_name, save_dir, ma
                         f.write(image_data)
                     logger.info(f"[{target_hrno}] 다운로드 완료: {img_filename}")
                     downloaded = True
+                    downloaded_count += 1
                     break
                 elif response.status == 404:
                     logger.warning(f"[{target_hrno}] 사진 {idx} 서버에 없음 (404). 스킵.")
@@ -140,11 +162,18 @@ async def _download_photos_from_list(page, target_hrno, horse_name, save_dir, ma
             logger.error(f"[{target_hrno}] 사진 {idx} 처리 중 오류: {inner_e}")
             continue
             
-    return True
+    if downloaded_count == 0 and len(target_links) > 0:
+        logger.error(f"❌ [{target_hrno}] 사진이 존재하지만 단 한 장도 받지 못해 실패 처리합니다.")
+        return -1
+        
+    return downloaded_count
 
 async def download_horse_images(hrno: str, max_images: int = 15) -> bool:
     hrno = hrno.strip()
     horse_name = "알수없음"
+    save_dir = None
+    success = False
+    
     if len(hrno) != 10:
         logger.error(f"올바르지 않은 HRNO 형식입니다 (10자리 숫자 필요): {hrno}")
         log_failed_hrno(hrno, horse_name, "올바르지 않은 HRNO 형식")
@@ -212,98 +241,182 @@ async def download_horse_images(hrno: str, max_images: int = 15) -> bool:
 
             logger.info(f"[{hrno}] 말 이름 추출: {horse_name}")
             
-            save_dir = Path(f"Z:\\JMaFeel\\경주마 영상\\경주마\\새 폴더\\{horse_name}")
+            save_dir = Path(f"Z:\\JMaFeel\\경주마 영상\\경주마\\{horse_name}")
             save_dir.mkdir(parents=True, exist_ok=True)
             
             # 마주복색 다운로드
             silk_path = save_dir / "마주복색.jpg"
-            try:
-                silk_img_el = await page.query_selector("table.db_prof_table tr:has(th:has-text('馬主')) td img")
-                if silk_img_el:
-                    silk_url = await silk_img_el.get_attribute("src")
-                    if silk_url:
-                        if silk_url.startswith("//"): silk_url = "https:" + silk_url
-                        elif not silk_url.startswith("http"): silk_url = "https://db.netkeiba.com" + silk_url
-                        
-                        if not silk_path.exists():
-                            res = await page.request.get(silk_url, timeout=30000)
-                            if res.ok:
-                                image_data = await res.body()
-                                with open(silk_path, "wb") as f:
-                                    f.write(image_data)
-                                logger.info(f"[{hrno}] 마주복색 저장 완료")
-                            elif res.status == 404:
-                                logger.warning(f"[{hrno}] 마주복색 사진이 서버에 없음 (404)")
-                                log_failed_hrno(hrno, horse_name, "마주복색 사진 404 Not Found")
-                            else:
-                                logger.warning(f"[{hrno}] 마주복색 다운로드 실패 (상태코드: {res.status})")
-                                log_failed_hrno(hrno, horse_name, f"마주복색 다운로드 실패 (상태코드: {res.status})")
-                else:
-                    logger.warning(f"[{hrno}] 마주복색 이미지를 구조에서 찾을 수 없습니다.")
-                    log_failed_hrno(hrno, horse_name, "마주복색 이미지 구조 없음")
-            except Exception as e:
-                logger.warning(f"[{hrno}] 마주복색 수집 중 오류: {e}")
-                log_failed_hrno(hrno, horse_name, f"마주복색 수집 중 오류: {e}")
+            silk_img_el = await page.query_selector("table.db_prof_table tr:has(th:has-text('馬主')) td img")
+            if not silk_img_el:
+                logger.error(f"❌ [{hrno}] 마주복색 태그가 페이지에 존재하지 않아 수집 실패 처리합니다.")
+                log_failed_hrno(hrno, horse_name, "[마주복색] 이미지 구조 없음")
+                return False
+
+            silk_url = await silk_img_el.get_attribute("src")
+            if not silk_url:
+                logger.error(f"❌ [{hrno}] 마주복색 URL을 찾을 수 없습니다.")
+                log_failed_hrno(hrno, horse_name, "[마주복색] URL 누락")
+                return False
+
+            if silk_url.startswith("//"):
+                silk_url = "https:" + silk_url
+            elif not silk_url.startswith("http"):
+                silk_url = "https://db.netkeiba.com" + silk_url
+
+            silk_downloaded = False
+            if silk_path.exists():
+                logger.info(f"[{hrno}] 마주복색 이미지가 이미 존재합니다.")
+                silk_downloaded = True
+            else:
+                max_silk_retries = 3
+                for attempt in range(1, max_silk_retries + 1):
+                    try:
+                        res = await page.request.get(silk_url, timeout=30000)
+                        if res.ok:
+                            image_data = await res.body()
+                            with open(silk_path, "wb") as f:
+                                f.write(image_data)
+                            logger.info(f"[{hrno}] 마주복색 저장 완료")
+                            silk_downloaded = True
+                            break
+                        elif res.status == 404:
+                            logger.error(f"❌ [{hrno}] 마주복색 사진이 서버에 없음 (404)")
+                            break
+                        else:
+                            logger.warning(f"⚠️ [{hrno}] 마주복색 다운로드 실패 (상태코드: {res.status}). {attempt}/{max_silk_retries-1} 재시도 대기...")
+                    except Exception as e:
+                        logger.warning(f"⚠️ [{hrno}] 마주복색 다운로드 시도 중 오류: {e}. {attempt}/{max_silk_retries-1} 재시도 대기...")
+                    
+                    if attempt < max_silk_retries:
+                        time.sleep(3)
+
+            if not silk_downloaded:
+                logger.error(f"❌ [{hrno}] 마주복색 수집 최종 실패.")
+                log_failed_hrno(hrno, horse_name, "[마주복색] 다운로드 최종 실패")
+                return False
             
             # 2. 본인 사진 다운로드 시도 (테스트를 위해 빠른 진행 1개 수집)
-            has_photos = await _download_photos_from_list(page, hrno, horse_name, save_dir, max_images=1)
+            download_result = await _download_photos_from_list(page, hrno, horse_name, save_dir, max_images=16, is_target=True)
             
-            if not has_photos:
-                logger.warning(f"[{hrno}] 본인 등록된 사진이 없음. 부마/모마 사진 수집을 시도합니다.")
+            if download_result == -1:
+                logger.error(f"❌ [{hrno}] 본인 사진 목록 접속 또는 이미지 다운로드 최종 실패.")
+                return False
+                
+            elif download_result == 0:
+                logger.warning(f"[{hrno}] 본인 등록된 사진이 없음 (True Zero). 부마/모마 사진 수집을 시도합니다.")
                 
                 # 프로필 페이지로 복귀하여 혈통표에서 부마/모마 링크 추출
                 await asyncio.sleep(random.uniform(2.5, 4.5))
                 await page.goto(horse_url, timeout=30000)
                 
                 sire_href = await page.evaluate('''() => {
-                    const a = document.querySelector("table.blood_table td[rowspan='4'].b_ml a");
+                    const a = document.querySelector("table.blood_table td.b_ml a");
                     return a ? a.href : null;
                 }''')
                 
                 dam_href = await page.evaluate('''() => {
-                    const a = document.querySelector("table.blood_table td[rowspan='4'].b_fml a");
+                    const a = document.querySelector("table.blood_table td.b_fml a");
                     return a ? a.href : null;
                 }''')
                 
                 # 부마 사진 수집
+                sire_success = False
                 if sire_href:
                     sire_hrno = sire_href.rstrip('/').split('/')[-1]
-                    await asyncio.sleep(random.uniform(2.5, 4.5))
-                    await page.goto(sire_href, timeout=30000)
+                    logger.info(f"[{hrno}] 부마 수집 시작 (ID: {sire_hrno})")
                     
                     try:
-                        sire_name_el = await page.wait_for_selector("div.horse_title h1", timeout=15000)
-                        sire_name = (await sire_name_el.inner_text()).strip()
-                        sire_dir = save_dir / "부마"
-                        sire_dir.mkdir(parents=True, exist_ok=True)
-                        
-                        logger.info(f"[{hrno}] 부마({sire_name}) 사진 수집 시작...")
-                        await asyncio.sleep(random.uniform(2.5, 4.5))
-                        await _download_photos_from_list(page, sire_hrno, sire_name, sire_dir, max_images=16)
+                        sire_page_loaded = False
+                        for attempt in range(1, 4):
+                            try:
+                                await asyncio.sleep(random.uniform(2.5, 4.5))
+                                await page.goto(sire_href, timeout=30000)
+                                
+                                # '写真' 탭 클릭하여 사진 목록으로 이동
+                                photo_link = await page.query_selector("a:text('写真')")
+                                if photo_link:
+                                    await photo_link.click()
+                                    await page.wait_for_load_state("load", timeout=20000)
+                                else:
+                                    await page.goto(f"https://db.netkeiba.com/photo/list.html?id={sire_hrno}", timeout=30000)
+                                
+                                sire_name_el = await page.wait_for_selector("div.horse_title h1", timeout=15000)
+                                sire_name = (await sire_name_el.inner_text()).strip()
+                                sire_name = sire_name.replace("의投稿사진", "").replace("の投稿写真", "").replace("사진", "").replace("写真", "").strip()
+                                
+                                sire_page_loaded = True
+                                break
+                            except Exception as e:
+                                logger.warning(f"[{hrno}] 부마 페이지 접속 시도 {attempt}/3 실패: {e}")
+                                reconnect_vpn()
+                                
+                        if sire_page_loaded:
+                            sire_dir = save_dir / "부마"
+                            sire_dir.mkdir(parents=True, exist_ok=True)
+                            logger.info(f"[{hrno}] 부마({sire_name}) 사진 수집 중 (최대 10장)...")
+                            await asyncio.sleep(random.uniform(2.5, 4.5))
+                            sire_res = await _download_photos_from_list(page, sire_hrno, sire_name, sire_dir, max_images=10, is_target=False)
+                            if sire_res != -1:
+                                sire_success = True
                     except Exception as e:
-                        logger.warning(f"[{hrno}] 부마 정보 파악/수집 중 오류: {e}")
+                        logger.warning(f"[{hrno}] 부마 정보 파악/수집 중 최종 오류: {e}")
                 else:
                     logger.warning(f"[{hrno}] 부마 링크를 찾을 수 없습니다.")
+                
+                # 본체 페이지로 복귀하여 모마 링크 찾기 대기
+                await asyncio.sleep(random.uniform(2.0, 4.0))
+                await page.goto(horse_url, timeout=30000)
                     
                 # 모마 사진 수집
+                dam_success = False
                 if dam_href:
                     dam_hrno = dam_href.rstrip('/').split('/')[-1]
-                    await asyncio.sleep(random.uniform(2.5, 4.5))
-                    await page.goto(dam_href, timeout=30000)
+                    logger.info(f"[{hrno}] 모마 수집 시작 (ID: {dam_hrno})")
                     
                     try:
-                        dam_name_el = await page.wait_for_selector("div.horse_title h1", timeout=15000)
-                        dam_name = (await dam_name_el.inner_text()).strip()
-                        dam_dir = save_dir / "모마"
-                        dam_dir.mkdir(parents=True, exist_ok=True)
-                        
-                        logger.info(f"[{hrno}] 모마({dam_name}) 사진 수집 시작...")
-                        await asyncio.sleep(random.uniform(2.5, 4.5))
-                        await _download_photos_from_list(page, dam_hrno, dam_name, dam_dir, max_images=16)
+                        dam_page_loaded = False
+                        for attempt in range(1, 4):
+                            try:
+                                await asyncio.sleep(random.uniform(2.5, 4.5))
+                                await page.goto(dam_href, timeout=30000)
+                                
+                                # '写真' 탭 클릭하여 사진 목록으로 이동
+                                photo_link = await page.query_selector("a:text('写真')")
+                                if photo_link:
+                                    await photo_link.click()
+                                    await page.wait_for_load_state("load", timeout=20000)
+                                else:
+                                    await page.goto(f"https://db.netkeiba.com/photo/list.html?id={dam_hrno}", timeout=30000)
+                                
+                                dam_name_el = await page.wait_for_selector("div.horse_title h1", timeout=15000)
+                                dam_name = (await dam_name_el.inner_text()).strip()
+                                dam_name = dam_name.replace("의投稿사진", "").replace("の投稿写真", "").replace("사진", "").replace("写真", "").strip()
+                                
+                                dam_page_loaded = True
+                                break
+                            except Exception as e:
+                                logger.warning(f"[{hrno}] 모마 페이지 접속 시도 {attempt}/3 실패: {e}")
+                                reconnect_vpn()
+                                
+                        if dam_page_loaded:
+                            dam_dir = save_dir / "모마"
+                            dam_dir.mkdir(parents=True, exist_ok=True)
+                            logger.info(f"[{hrno}] 모마({dam_name}) 사진 수집 중 (최대 10장)...")
+                            await asyncio.sleep(random.uniform(2.5, 4.5))
+                            dam_res = await _download_photos_from_list(page, dam_hrno, dam_name, dam_dir, max_images=10, is_target=False)
+                            if dam_res != -1:
+                                dam_success = True
                     except Exception as e:
-                        logger.warning(f"[{hrno}] 모마 정보 파악/수집 중 오류: {e}")
+                        logger.warning(f"[{hrno}] 모마 정보 파악/수집 중 최종 오류: {e}")
                 else:
                     logger.warning(f"[{hrno}] 모마 링크를 찾을 수 없습니다.")
+
+                if (sire_href and not sire_success) or (dam_href and not dam_success):
+                    logger.error(f"❌ [{hrno}] 부마/모마 사진 수집 중 네트워크 오류 또는 차단으로 최종 실패했습니다.")
+                    log_failed_hrno(hrno, horse_name, "부마/모마 수집 중 접속 실패")
+                    return False
+
+            success = True
 
         except Exception as e:
             logger.error(f"[{hrno}] 작업 중 오류 발생: {e}")
@@ -311,15 +424,37 @@ async def download_horse_images(hrno: str, max_images: int = 15) -> bool:
             return False
         finally:
             await browser.close()
+            if not success and save_dir and save_dir.exists():
+                try:
+                    shutil.rmtree(save_dir)
+                    logger.warning(f"🧹 [{hrno}] 수집 최종 실패로 인해 임시 생성된 '{horse_name}' 폴더를 롤백(삭제)합니다.")
+                except Exception as del_e:
+                    logger.error(f"🧹 [{hrno}] 폴더 삭제 실패: {del_e}")
             
-        return True
+        return success
             
 def run_downloader(hrno_list, max_images=30):
     ensure_vpn_connected()
     total = len(hrno_list)
     success_count = 0
     fail_count = 0
-    for hrno in hrno_list:
+    skip_count = 0
+    for item in hrno_list:
+        if isinstance(item, dict):
+            hrno = item.get("HRNO")
+            hrname = item.get("HRNAME", "")
+        else:
+            hrno = item
+            hrname = ""
+            
+        # 디렉토리 존재 여부 사전 검사
+        if hrname:
+            check_dir = Path(f"Z:\\JMaFeel\\경주마 영상\\경주마\\{hrname}")
+            if check_dir.exists() and check_dir.is_dir():
+                logger.info(f"⏭️ [{hrno}] '{hrname}' 디렉토리가 이미 존재합니다. 사이트 방문 없이 건너뜁니다.")
+                skip_count += 1
+                continue
+                
         success = asyncio.run(download_horse_images(hrno, max_images))
         if success:
             success_count += 1
@@ -329,22 +464,24 @@ def run_downloader(hrno_list, max_images=30):
     logger.info(f"========== 전체 다운로드 완료 ==========")
     logger.info(f"총 대상 말 수: {total} 마리")
     logger.info(f"✅ 수집 성공: {success_count} 마리")
+    logger.info(f"⏭️ 건너뜀(이미 존재): {skip_count} 마리")
     logger.info(f"❌ 수집 실패: {fail_count} 마리")
     logger.info(f"========================================")
 
-def load_hrno_list_from_csv(csv_path: Path, col_name: str = "HRNO") -> list[str]:
-    hrnos = []
+def load_hrno_list_from_csv(csv_path: Path, col_name: str = "HRNO") -> list[dict]:
+    items = []
     with open(csv_path, "r", encoding="utf-8-sig", newline="") as f:
         reader = csv.DictReader(f)
         for row in reader:
-            v = (row.get(col_name) or "").strip()
-            if v:
-                hrnos.append(v)
+            hrno = (row.get(col_name) or "").strip()
+            hrname = (row.get("HRNAME") or "").strip()
+            if hrno:
+                items.append({"HRNO": hrno, "HRNAME": hrname})
     seen = set()
     uniq = []
-    for x in hrnos:
-        if x not in seen:
-            seen.add(x)
+    for x in items:
+        if x["HRNO"] not in seen:
+            seen.add(x["HRNO"])
             uniq.append(x)
     return uniq
         

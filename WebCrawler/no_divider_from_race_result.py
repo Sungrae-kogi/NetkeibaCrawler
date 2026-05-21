@@ -51,6 +51,7 @@ def extract_and_save_ids(input_files):
             "JKNO": set(),
             "TRNO": set()
         }
+        hr_names = {}
 
         with open(file_path, 'r', encoding='utf-8-sig') as f:
             reader = csv.DictReader(f)
@@ -59,6 +60,8 @@ def extract_and_save_ids(input_files):
                     val = row.get(key)
                     if val and val.strip():
                         data_sets[key].add(val.strip())
+                        if key == "HRNO" and row.get("HRNAME"):
+                            hr_names[val.strip()] = row.get("HRNAME").strip()
 
         for key, folder_path in targets.items():
             out_dir = Path(folder_path)
@@ -67,9 +70,14 @@ def extract_and_save_ids(input_files):
 
             with open(out_file, 'w', newline='', encoding='utf-8-sig') as f:
                 writer = csv.writer(f)
-                writer.writerow([key])
-                for item in sorted(data_sets[key]):
-                    writer.writerow([item])
+                if key == "HRNO":
+                    writer.writerow(["HRNO", "HRNAME"])
+                    for hrno in sorted(data_sets[key]):
+                        writer.writerow([hrno, hr_names.get(hrno, "")])
+                else:
+                    writer.writerow([key])
+                    for item in sorted(data_sets[key]):
+                        writer.writerow([item])
 
         logger.info(
             f"분배 완료: "

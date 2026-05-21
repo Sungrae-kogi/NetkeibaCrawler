@@ -23,6 +23,7 @@ def parse_api_entry_sheet_2(soup: BeautifulSoup, url: str, odds_data: Dict = Non
         "STTIME": None,
         "TRACK_TYPE": None,
         "DIRECTION": None,
+        "RCGRD": None,
         "RCNAME": None,
         "CHAKSUN1": None,
         "CHAKSUN2": None,
@@ -49,6 +50,19 @@ def parse_api_entry_sheet_2(soup: BeautifulSoup, url: str, odds_data: Dict = Non
     race_name_tag = soup.select_one(".RaceList_Item02 .RaceName")
     if race_name_tag:
          base_out["RCNAME"] = race_name_tag.get_text(" ", strip=True)
+
+    # RCGRD
+    item02 = soup.select_one(".RaceList_Item02")
+    if item02:
+        spans_grade = item02.find_all("span", class_=re.compile(r"Icon_GradeType"))
+        for sp in spans_grade:
+            classes = sp.get("class", [])
+            if "Icon_GradeType1" in classes: base_out["RCGRD"] = "GI"; break
+            elif "Icon_GradeType2" in classes: base_out["RCGRD"] = "GII"; break
+            elif "Icon_GradeType3" in classes: base_out["RCGRD"] = "GIII"; break
+            elif "Icon_GradeType10" in classes: base_out["RCGRD"] = "JGI"; break
+            elif "Icon_GradeType11" in classes: base_out["RCGRD"] = "JGII"; break
+            elif "Icon_GradeType12" in classes: base_out["RCGRD"] = "JGIII"; break
 
     # Data01 (.RaceData01)
     data01_tag = soup.select_one(".RaceList_Item02 .RaceData01")
@@ -127,6 +141,8 @@ def parse_api_entry_sheet_2(soup: BeautifulSoup, url: str, odds_data: Dict = Non
             if not rank_val and len(spans) >= 5:
                 rank_val = spans[4].strip()
 
+        if rank_val:
+            rank_val = rank_val.replace("1", "１").replace("2", "２").replace("3", "３")
         base_out["RANK"] = rank_val
             
         for sp in spans:

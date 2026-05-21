@@ -5,6 +5,7 @@ import os
 import smtplib
 import pandas as pd
 import pymysql
+import re
 from email.header import decode_header
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -17,7 +18,10 @@ from openpyxl.styles import PatternFill, Border, Side, Alignment, Font
 def get_credentials():
     config_path = Path("naverworks_config.json")
     if not config_path.exists():
-        return None, None
+        # 실행 경로 환경에 따라 백업 경로 확인
+        config_path = Path("Reporting/naverworks_config.json")
+        if not config_path.exists():
+            return None, None
     with open(config_path, "r", encoding="utf-8") as f:
         config = json.load(f)
         return config.get("email"), config.get("password")
@@ -31,7 +35,7 @@ def get_db_connection():
         port=config.get('port', 3306),
         user=config['user'],
         password=config['password'],
-        database=config['database'],
+        database="k_mafeel",  # 한국 데이터베이스 k_mafeel 고정
         cursorclass=pymysql.cursors.DictCursor
     )
 
@@ -47,7 +51,11 @@ def decode_mime_words(s):
             result.append(word)
     return "".join(result)
 
-def fetch_prediction_table(venue_kor, date_str):
+def fetch_prediction_table(venue_kor, date_str=None):
+    """
+    naver_works 메일함에서 mafeel@becurio.com이 보낸 [서울-날짜]경주결과 Report 제목의 메일을 읽어옵니다.
+    날짜(date_str)가 지정되지 않은 경우 가장 최신 메일에서 날짜를 자동 추출합니다.
+    """
     user_email, user_password = get_credentials()
     imap_server = "imap.worksmobile.com"
     
@@ -58,19 +66,32 @@ def fetch_prediction_table(venue_kor, date_str):
     status, messages = mail.search(None, 'FROM', '"mafeel@becurio.com"')
     mail_ids = messages[0].split()
     
-    KOR_TO_JPN = {'교토': '京都', '도쿄': '東京', '나카야마': '中山', '한신': '阪神', '니가타': '新潟', '고쿠라': '小倉', '삿포로': '札幌', '하코다테': '函館', '후쿠시마': '福島', '중경': '中京'}
-    venue_jp = KOR_TO_JPN.get(venue_kor, venue_kor)
-    
-    target_subject_part = f"[{venue_jp}-{date_str}]"
+    # [서울-20260516]경주결과 Report 형태 검색 필터 생성
+    if date_str:
+        target_subject_part = f"[{venue_kor}-{date_str}]경주결과 Report"
+    else:
+        target_subject_part = f"[{venue_kor}-"
     
     df = None
+    found_date = date_str
+    
     for i in reversed(mail_ids):
         res, msg_data = mail.fetch(i, "(RFC822)")
         for response_part in msg_data:
             if isinstance(response_part, tuple):
                 msg = email.message_from_bytes(response_part[1])
                 subject = decode_mime_words(msg["Subject"])
-                if subject and target_subject_part in subject:
+                
+                # 메일 제목에 target_subject_part가 포함되고 "경주결과 Report"가 들어있는지 검사
+                if subject and target_subject_part in subject and "경주결과 Report" in subject:
+                    if not date_str:
+                        # 메일 제목에서 날짜(8자리 숫자) 자동 추출
+                        m = re.search(rf"\[{venue_kor}-(\d{{8}})\]", subject)
+                        if m:
+                            found_date = m.group(1)
+                        else:
+                            continue # 날짜 패턴이 매칭되지 않으면 패스
+                            
                     for part in msg.walk():
                         if part.get_content_maintype() == 'multipart': continue
                         if part.get_content_type() == "text/html" and part.get('Content-Disposition') is None:
@@ -78,8 +99,8 @@ def fetch_prediction_table(venue_kor, date_str):
                                 html_body = part.get_payload(decode=True).decode('utf-8', errors='replace')
                                 tables = pd.read_html(StringIO(html_body), header=0)
                                 for table in tables:
-                                    # 예측 데이터 표는 보통 '순위', '출발번호', '한글마명' 등의 컬럼을 가짐
-                                    if '순위' in table.columns or '한글마명' in table.columns:
+                                    # 예측 데이터 테이블 컬럼 확인 (순위, 마명 등)
+                                    if '순위' in table.columns or '한글마명' in table.columns or '마명' in table.columns:
                                         df = table
                                         break
                                 if df is not None:
@@ -88,16 +109,30 @@ def fetch_prediction_table(venue_kor, date_str):
                                 pass
                     if df is not None:
                         mail.logout()
-                        return df, venue_jp
+                        return df, found_date
     mail.logout()
-    return None, venue_jp
+    return None, found_date
 
-def generate_hybrid_report(pred_df, venue_jp, date_hyphen):
+def generate_hybrid_report(pred_df, venue_kor, date_str):
+    """
+    예측 데이터와 api_race_result 테이블의 실제 경기 결과를 병합하여 리포트 데이터를 생성합니다.
+    """
+    # 컬럼 표준화
+    if '마명' in pred_df.columns and '한글마명' not in pred_df.columns:
+        pred_df = pred_df.rename(columns={'마명': '한글마명'})
+        
     keep_cols = ['경주정보', '날짜', '경주번호', '순위', '출발번호', '한글마명']
-    df = pred_df[keep_cols].copy()
+    actual_keep = [col for col in keep_cols if col in pred_df.columns]
+    df = pred_df[actual_keep].copy()
     
     df.rename(columns={'순위': '[예측]순위', '출발번호': '[예측]출발번호', '한글마명': '[예측]한글마명'}, inplace=True)
     
+    # date_str을 int 타입으로 안전 변환 (예: '2026-05-10' 또는 '20260510' -> 20260510)
+    try:
+        date_int = int(str(date_str).replace('-', ''))
+    except Exception:
+        date_int = 0
+        
     conn = get_db_connection()
     try:
         actual_data = []
@@ -105,18 +140,30 @@ def generate_hybrid_report(pred_df, venue_jp, date_hyphen):
         pred_actual_ranks = []
         
         for _, row in df.iterrows():
-            race_no = row['경주번호']
-            pred_rank = row['[예측]순위']
-            pred_horse_no = row['[예측]출발번호']
+            race_no = row.get('경주번호', 1)
+            pred_rank = row.get('[예측]순위', '')
+            pred_horse_no = row.get('[예측]출발번호', '')
+            
+            # 경주번호 포맷 정제 (예: '3경주' 또는 3 -> 3)
+            race_str = str(race_no).replace('경주', '').strip()
+            try:
+                race_num = int(re.sub(r'\D', '', race_str))
+            except Exception:
+                race_num = 1
+                
+            # 출발번호(마번) 정수화 (예: '03' -> 3)
+            try:
+                pred_horse_int = int(pred_horse_no)
+            except Exception:
+                pred_horse_int = 0
             
             with conn.cursor() as cursor:
-                # 1. 예측마의 배당률 및 실제 순위 가져오기
-                race_suffix = f"%{str(race_no).zfill(2)}"
-                sql_pred = "SELECT WIN_ODDS, RK FROM tmp_races WHERE RCDATE=%s AND MEET=%s AND RCNO LIKE %s AND CHULNO=%s"
-                cursor.execute(sql_pred, (date_hyphen, venue_jp, race_suffix, pred_horse_no))
+                # 1. 예측마의 배당률 및 실제 순위 가져오기 (RACE_DT, RACE_NO, GTNO 모두 int 타입으로 매칭)
+                sql_pred = "SELECT WIN_PRICE, RK FROM api_race_result WHERE RACE_DT=%s AND RCCRS_NM=%s AND RACE_NO=%s AND GTNO=%s"
+                cursor.execute(sql_pred, (date_int, venue_kor, race_num, pred_horse_int))
                 res_pred = cursor.fetchone()
                 if res_pred:
-                    pred_odds_list.append(res_pred['WIN_ODDS'])
+                    pred_odds_list.append(res_pred['WIN_PRICE'])
                     pred_actual_rank = f"{res_pred['RK']}등" if res_pred['RK'] else '-'
                 else:
                     pred_odds_list.append('-')
@@ -126,16 +173,20 @@ def generate_hybrid_report(pred_df, venue_jp, date_hyphen):
             with conn.cursor() as cursor:
                 # 2. 실제 순위 정보 대조 (1등, 2등, 3등 포디움 채우기)
                 if pred_rank in ['1등', '2등', '3등']:
-                    rank_num = pred_rank.replace('등', '')
-                    sql_actual = "SELECT RK, CHULNO, HRNAME, WIN_ODDS FROM tmp_races WHERE RCDATE=%s AND MEET=%s AND RCNO LIKE %s AND RK=%s"
-                    cursor.execute(sql_actual, (date_hyphen, venue_jp, race_suffix, rank_num))
+                    try:
+                        rank_num = int(pred_rank.replace('등', ''))
+                    except Exception:
+                        rank_num = 1
+                        
+                    sql_actual = "SELECT RK, GTNO, HRNM, WIN_PRICE FROM api_race_result WHERE RACE_DT=%s AND RCCRS_NM=%s AND RACE_NO=%s AND RK=%s"
+                    cursor.execute(sql_actual, (date_int, venue_kor, race_num, rank_num))
                     res_act = cursor.fetchone()
                     if res_act:
                         actual_data.append({
                             '[실제]순위': f"{res_act['RK']}등", 
-                            '[실제]출발번호': res_act['CHULNO'], 
-                            '[실제]한글마명': res_act['HRNAME'], 
-                            '[실제]배당률': res_act['WIN_ODDS']
+                            '[실제]출발번호': res_act['GTNO'], 
+                            '[실제]한글마명': res_act['HRNM'], 
+                            '[실제]배당률': res_act['WIN_PRICE']
                         })
                     else:
                         actual_data.append({'[실제]순위': '-', '[실제]출발번호': '-', '[실제]한글마명': '-', '[실제]배당률': '-'})
@@ -167,9 +218,9 @@ def create_excel_file(df, filepath):
     
     for _, row in df.iterrows():
         ws.append([
-            row["경주정보"], row["날짜"], row["경주번호"],
-            row["[예측]순위"], row["[예측]출발번호"], row["[예측]한글마명"], row["[예측]배당률"], row["[예측]실제순위"],
-            row["[실제]순위"], row["[실제]출발번호"], row["[실제]한글마명"], row["[실제]배당률"]
+            row.get("경주정보", ""), row.get("날짜", ""), row.get("경주번호", ""),
+            row.get("[예측]순위", ""), row.get("[예측]출발번호", ""), row.get("[예측]한글마명", ""), row.get("[예측]배당률", ""), row.get("[예측]실제순위", ""),
+            row.get("[실제]순위", ""), row.get("[실제]출발번호", ""), row.get("[실제]한글마명", ""), row.get("[실제]배당률", "")
         ])
         
     thin = Side(border_style="thin", color="000000")
@@ -240,42 +291,38 @@ def create_excel_file(df, filepath):
             
     wb.save(filepath)
 
-def send_report_email(final_df, to_emails, venue_jp, date_str, cc_emails=None):
+def send_report_email(final_df, to_emails, venue_kor, date_str, cc_emails=None):
     user_email, user_password = get_credentials()
     smtp_server = "smtp.worksmobile.com"
     
     msg = MIMEMultipart()
     msg['From'] = user_email
     
-    # 받는 사람 (To)
     if isinstance(to_emails, list):
         msg['To'] = ", ".join(to_emails)
     else:
         msg['To'] = to_emails
         
-    # 참조 (Cc)
     if cc_emails:
         if isinstance(cc_emails, list):
             msg['Cc'] = ", ".join(cc_emails)
         else:
             msg['Cc'] = cc_emails
         
-    # 제목: [京都-20260510] 예측과 실제 결과 비교 리포트
-    msg['Subject'] = f"[{venue_jp}-{date_str}] 예측과 실제 결과 비교 리포트"
+    msg['Subject'] = f"[{venue_kor}-{date_str}] 예측과 실제 결과 비교 리포트"
     
     date_hyphen = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
     html_content = f"""
     <html>
     <body>
-        <p>{date_hyphen} {venue_jp} 경기 결과와 예측 비교 리포트를 첨부 파일로 송부합니다.</p>
+        <p>{date_hyphen} {venue_kor} 경기 결과와 예측 비교 리포트를 첨부 파일로 송부합니다.</p>
         <p>감사합니다.</p>
     </body>
     </html>
     """
     msg.attach(MIMEText(html_content, 'html'))
     
-    # 파일명: 京都_20260510_예측과_실제_결과_비교_리포트.xlsx
-    excel_filename = f"{venue_jp}_{date_str}_예측과_실제_결과_비교_리포트.xlsx"
+    excel_filename = f"{venue_kor}_{date_str}_예측과_실제_결과_비교_리포트.xlsx"
     create_excel_file(final_df, excel_filename)
     
     with open(excel_filename, "rb") as f:
@@ -288,38 +335,40 @@ def send_report_email(final_df, to_emails, venue_jp, date_str, cc_emails=None):
         server.login(user_email, user_password)
         server.send_message(msg)
         server.quit()
-        print(f"[{venue_jp}-{date_str}] 이메일 발송 성공!")
+        print(f"[{venue_kor}-{date_str}] 이메일 발송 성공!")
     except Exception as e:
         print(f"이메일 발송 실패: {e}")
 
-def run_reporting_pipeline(venue_jp, date_str, to_emails=None, cc_emails=None):
+def run_kor_reporting_pipeline(venue_kor, date_str=None, to_emails=None, cc_emails=None):
     """
-    all.py 등 외부에서 호출하기 위한 메인 함수
-    venue_jp: '京都', '東京' 등 (한자명)
-    date_str: '20260510' 등
-    to_emails: 받는 사람 이메일 (문자열 또는 리스트)
-    cc_emails: 참조 이메일 (문자열 또는 리스트)
+    한국 전용 결과 리포트 파이프라인 메인 실행부
     """
     if to_emails is None:
-        # 받는 사람 (1명)
         to_emails = "ysoh@becurio.com"
     
     if cc_emails is None:
-        # 참조 (3명)
         cc_emails = ["pizza@becurio.com", "dinok@becurio.com", "whvkek@becurio.com"]
 
-    print(f"\n--- [{venue_jp}-{date_str}] 리포트 생성 파이프라인 시작 ---")
-    pred_df, _ = fetch_prediction_table(venue_jp, date_str)
+    search_target = date_str if date_str else "최근메일자동추출"
+    print(f"\n--- [{venue_kor}] 한국 리포트 생성 파이프라인 시작 ({search_target}) ---")
     
-    if pred_df is not None:
-        date_hyphen = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
-        final_df = generate_hybrid_report(pred_df, venue_jp, date_hyphen)
-        send_report_email(final_df, to_emails, venue_jp, date_str, cc_emails=cc_emails)
+    pred_df, extracted_date = fetch_prediction_table(venue_kor, date_str)
+    
+    if pred_df is not None and extracted_date is not None:
+        print(f"[{venue_kor}] 대상 날짜 {extracted_date} 메일을 발견했습니다. DB 조회를 시작합니다.")
+        date_hyphen = f"{extracted_date[:4]}-{extracted_date[4:6]}-{extracted_date[6:8]}"
+        final_df = generate_hybrid_report(pred_df, venue_kor, date_hyphen)
+        send_report_email(final_df, to_emails, venue_kor, extracted_date, cc_emails=cc_emails)
         return True
     else:
-        print(f"⚠️ [{venue_jp}-{date_str}] 해당 경기의 예측 메일을 찾을 수 없어 리포트 생성을 건너뜁니다.")
+        print(f"⚠️ [{venue_kor}] 경주결과 Report 예측 메일을 찾을 수 없어 리포트 생성을 건너뜁니다.")
         return False
 
 if __name__ == "__main__":
-    # 단독 실행 테스트용
-    run_reporting_pipeline("京都", "20260510")
+    import argparse
+    parser = argparse.ArgumentParser(description="한국 결과 리포트 단독 실행")
+    parser.add_argument("venue", help="경기장 한글명 (예: 서울, 부산, 제주)")
+    parser.add_argument("date", nargs="?", help="날짜 (형식: YYYYMMDD, 생략 시 최근 메일에서 자동 추출)", default=None)
+    
+    args = parser.parse_args()
+    run_kor_reporting_pipeline(args.venue, args.date)

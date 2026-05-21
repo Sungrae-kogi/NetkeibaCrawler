@@ -164,7 +164,7 @@ def execute_transfer(target_date=None, target_venue=None, max_retries=3):
                 NULL, 
                 CAST(NULLIF(TRIM(r.RCDIST), '') AS UNSIGNED), 
                 CAST(NULLIF(TRIM(r.DUSU), '') AS UNSIGNED),
-                r.RANK, 
+                REPLACE(REPLACE(REPLACE(r.RANK, '1', '１'), '2', '２'), '3', '３'),
                 NULL, 
                 r.AGECOND, 
                 r.STTIME, 
@@ -192,12 +192,25 @@ def execute_transfer(target_date=None, target_venue=None, max_retries=3):
                 ON r.MEET = h.MEET AND r.HRNO = h.HR_NO
             WHERE r.RCDATE IN {target_dates}
               AND r.MEET IN {target_venues}
-              AND r.AGECOND NOT LIKE '障害%';
+              AND r.AGECOND NOT LIKE '障害%'
+            ON DUPLICATE KEY UPDATE
+                WAKU=VALUES(WAKU), CHULNO=VALUES(CHULNO), HRNAME=VALUES(HRNAME),
+                PRD=VALUES(PRD), SEX=VALUES(SEX), AGE=VALUES(AGE), HR_LAST_AMT=VALUES(HR_LAST_AMT),
+                WGBUDAM=VALUES(WGBUDAM), RATING=VALUES(RATING), JKNAME=VALUES(JKNAME), JKNO=VALUES(JKNO),
+                TRNAME=VALUES(TRNAME), TRNO=VALUES(TRNO), OWNAME=VALUES(OWNAME), OWNO=VALUES(OWNO),
+                ILSU=VALUES(ILSU), RCDIST=VALUES(RCDIST), DUSU=VALUES(DUSU), RANK=VALUES(RANK),
+                PRIZECOND=VALUES(PRIZECOND), AGECOND=VALUES(AGECOND), STTIME=VALUES(STTIME),
+                BUDAM=VALUES(BUDAM), RCNAME=VALUES(RCNAME), CHAKSUN1=VALUES(CHAKSUN1),
+                CHAKSUN2=VALUES(CHAKSUN2), CHAKSUN3=VALUES(CHAKSUN3), CHAKSUN4=VALUES(CHAKSUN4),
+                CHAKSUN5=VALUES(CHAKSUN5), CHAKSUNT=VALUES(CHAKSUNT), CHAKSUNY=VALUES(CHAKSUNY),
+                CHAKSUN_6M=VALUES(CHAKSUN_6M), ORD1CNTT=VALUES(ORD1CNTT), ORD2CNTT=VALUES(ORD2CNTT),
+                ORD3CNTT=VALUES(ORD3CNTT), RCCNTT=VALUES(RCCNTT), ORD1CNTY=VALUES(ORD1CNTY),
+                ORD2CNTY=VALUES(ORD2CNTY), ORD3CNTY=VALUES(ORD3CNTY), RCCNTY=VALUES(RCCNTY);
         """,
         "3. api_race_plan 삽입": f"""
             INSERT INTO api_race_plan (
                 RCCRS_NM, RACE_DT, RACE_DY_CNT, RACE_DOTW, RACE_NO,
-                RCGRD, RACE_NM, RACE_DS, PTIN_NHR, RACE_CLAS,
+                RCGRD, RACE_GRADE, RACE_NM, RACE_DS, PTIN_NHR, RACE_CLAS,
                 CNDTS_RATG, CNDTS_AG, CNDTS_GNDR, CNDTS_BURD_WGT, CNDTS_NCMR,
                 RPM_FPLC, RPM_SPLC, RPM_TPLC, RPM_FOPLC, RPM_FVPLC,
                 ADMNY_FPLC, ADMNY_SPLC, ADMNY_TPLC,
@@ -210,11 +223,12 @@ def execute_transfer(target_date=None, target_venue=None, max_retries=3):
                 NULL, 
                 MAX(RCDAY), 
                 CAST(NULLIF(TRIM(RIGHT(RCNO, 2)), '') AS UNSIGNED),
-                MAX(RANK), 
+                MAX(RCGRD), 
+                REPLACE(REPLACE(REPLACE(MAX(RANK), '1', '１'), '2', '２'), '3', '３'),
                 MAX(RCNAME), 
                 CAST(NULLIF(TRIM(MAX(RCDIST)), '') AS UNSIGNED), 
                 CAST(NULLIF(TRIM(MAX(DUSU)), '') AS UNSIGNED), 
-                MAX(RANK), 
+                REPLACE(REPLACE(REPLACE(MAX(RANK), '1', '１'), '2', '２'), '3', '３'),
                 NULL, 
                 MAX(AGECOND), 
                 NULL, 
@@ -234,6 +248,7 @@ def execute_transfer(target_date=None, target_venue=None, max_retries=3):
             ON DUPLICATE KEY UPDATE
                 RACE_DOTW = VALUES(RACE_DOTW),
                 RCGRD = VALUES(RCGRD),
+                RACE_GRADE = VALUES(RACE_GRADE),
                 RACE_NM = VALUES(RACE_NM),
                 RACE_DS = VALUES(RACE_DS),
                 PTIN_NHR = VALUES(PTIN_NHR),

@@ -33,9 +33,17 @@ def make_race_urls(start_url: str, max_races: int = 18):
 
     race_id = m.group(1)
     base = race_id[:-2]
+    
+    # URL에서 시작 경주 번호 추출
+    try:
+        start_idx = int(race_id[-2:])
+        if start_idx < 1 or start_idx > max_races: 
+            start_idx = 1
+    except ValueError:
+        start_idx = 1
 
     urls = []
-    for r in range(1, max_races + 1):
+    for r in range(start_idx, max_races + 1):
         rid = f"{base}{r:02d}"
         urls.append(
             (r, f"https://race.netkeiba.com/race/result.html?race_id={rid}")

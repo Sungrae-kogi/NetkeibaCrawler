@@ -57,12 +57,23 @@ def parse_race_item02(soup: BeautifulSoup, url: str | None = None) -> dict:
         "AGECOND": None, "CHAKSUN1": None, "CHAKSUN2": None,
         "CHAKSUN3": None, "CHAKSUN4": None, "CHAKSUN5": None,
         "WETR": None, "GOING": None, "TRACK_TYPE": None,
-        "DIRECTION": None,
+        "DIRECTION": None, "RCGRD": None,
     }
 
     item02 = soup.select_one(".RaceList_Item02")
     if not item02:
         return out
+
+    spans_grade = item02.find_all("span", class_=re.compile(r"Icon_GradeType"))
+    for sp in spans_grade:
+        classes = sp.get("class", [])
+        if "Icon_GradeType1" in classes: out["RCGRD"] = "GI"; break
+        elif "Icon_GradeType2" in classes: out["RCGRD"] = "GII"; break
+        elif "Icon_GradeType3" in classes: out["RCGRD"] = "GIII"; break
+        elif "Icon_GradeType5" in classes: out["RCGRD"] = "OP"; break
+        elif "Icon_GradeType10" in classes: out["RCGRD"] = "JGI"; break
+        elif "Icon_GradeType11" in classes: out["RCGRD"] = "JGII"; break
+        elif "Icon_GradeType12" in classes: out["RCGRD"] = "JGIII"; break
 
     # 1. 연도 추출 (URL의 race_id 앞 4자리)
     year = ""
@@ -132,6 +143,8 @@ def parse_race_item02(soup: BeautifulSoup, url: str | None = None) -> dict:
         if len(spans) >= 4: out["AGECOND"] = spans[3]
         if len(spans) >= 5:
             rank = spans[4].strip()
+            if rank:
+                rank = rank.replace("1", "１").replace("2", "２").replace("3", "３")
             out["RANK"] = rank if rank else None
 
         if (len(spans) >= 8):
