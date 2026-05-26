@@ -35,7 +35,7 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger("Information")
-URL = "https://race.netkeiba.com/top/information.html?rf=sidemenu"
+URL = "http://localhost:8000/mock_information.html"  # 로컬 테스트용 URL
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko)"
 }
@@ -179,6 +179,7 @@ def sync_cancel_to_db(records):
             # affected == 1: 신규 삽입, affected == 2: 수정됨, affected == 0: 변화 없음
             # 사용자의 요청에 따라 '신규 삽입'인 경우에만 알림 발송
             if affected == 1:
+                logger.info(f"💾 [DB 응답] affected: {affected} - (신규 삽입) DB에 없던 새로운 데이터라서 INSERT 되었습니다.")
                 new_insert_count += 1
                 conn.commit()
                 # 3. 알림 발송
@@ -187,20 +188,33 @@ def sync_cancel_to_db(records):
                 send_telegram_message(msg)
                 
                 # 4. 외부 API 호출 (출전취소 반영 시스템 트리거) - 현재 비활성화됨
-                # try:
-                #     deploy_url = f"http://192.168.0.30/schedule/deploy/cancelHorse.do?meet={meet}"
-                #     logger.info(f"🚀 외부 API 호출 시도: {deploy_url}")
-                #     resp = requests.get(deploy_url, timeout=15)
-                #     if resp.status_code == 200:
-                #         logger.info(f"✅ 외부 API 호출 성공 (응답: {resp.text[:50]})")
-                #     else:
-                #         logger.warning(f"⚠️ 외부 API 호출 실패 (상태코드: {resp.status_code})")
-                # except Exception as e:
-                #     logger.error(f"외부 API 호출 중 오류 발생: {e}")
+                try:
+                    # 테스트 URL
+                    deploy_url = f"http://192.168.0.30/schedule/deploy/cancelHorse.do?meet={meet}"
+                    logger.info(f"🚀 외부 API 호출 시도: {deploy_url}")
+                    resp = requests.get(deploy_url, timeout=15)
+                    
+                    # 🔍 사용자 요청: 응답(Response)에 대한 아주 상세한 로그
+                    logger.info(f"📊 [API 응답 상세] 상태코드: {resp.status_code}")
+                    logger.info(f"📊 [API 응답 상세] 소요시간: {resp.elapsed.total_seconds():.2f}초")
+                    logger.info(f"📊 [API 응답 상세] 헤더: {dict(resp.headers)}")
+                    logger.info(f"📊 [API 응답 상세] 본문(Text): {resp.text[:1000]}") # 너무 길면 로그창이 도배되므로 1000자까지만 출력
+                    
+                    if resp.status_code == 200:
+                        logger.info(f"✅ 외부 API 호출 성공")
+                    else:
+                        logger.warning(f"⚠️ 외부 API 호출 실패")
+                except requests.exceptions.Timeout:
+                    logger.error(f"🚨 [치명적 경고] 외부 API 호출 중 타임아웃(15초 초과) 발생! 서버 작업이 안 끝났는데 파이썬이 기다리다 지쳐 다음 로직으로 넘어갑니다!!")
+                except Exception as e:
+                    logger.error(f"🚨 외부 API 호출 중 오류 발생: {e}")
+                    
             elif affected == 2:
+                logger.info(f"💾 [DB 응답] affected: {affected} - (수정됨) 이미 DB에 존재하지만 일부 값(이름/사유 등)이 달라서 UPDATE 되었습니다.")
                 conn.commit()
                 logger.info(f"🔄 기존 정보 수정됨 (알림 미발송): {hrname} ({rcdate})")
             else:
+                logger.info(f"💾 [DB 응답] affected: {affected} - (변화 없음) 이미 DB에 존재하고 모든 값이 완벽히 동일하여 무시(No-op)되었습니다.")
                 logger.info(f"⏭️ 중복 패스 (변화 없음): {rcdate} {meet} {rcno}R {hrname}")
                 
         if new_insert_count > 0:
@@ -217,7 +231,7 @@ def fetch_and_parse():
     try:
         r = http.get(URL, headers=HEADERS, timeout=15)
         # 넷케이바 인코딩 보정
-        r.encoding = "EUC-JP"
+        r.encoding = "utf-8"  # 로컬 mock 테스트를 위해 UTF-8로 명시 (실제 넷케이바는 "EUC-JP"를 씁니다)
         r.raise_for_status()
     except Exception as e:
         logger.error(f"페이지 구조를 가져오는데 실패했습니다 (재시도 후 최종 실패): {e}")
@@ -381,8 +395,8 @@ def main():
             time.sleep(10)
             continue
 
-        logger.info("30분 뒤에 다시 확인합니다... (대기 중, 중단하고 메뉴로 돌아가려면 'q' 입력)\n")
-        if sleep_with_cancel(1800):
+        logger.info("2분 뒤에 다시 확인합니다... (대기 중, 중단하고 메뉴로 돌아가려면 'q' 입력)\n")
+        if sleep_with_cancel(120):
             logger.info("\n[안내] 사용자에 의해 모니터링 대기가 중단되었습니다.")
             break
 
