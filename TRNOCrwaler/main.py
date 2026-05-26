@@ -4,6 +4,7 @@ from __future__ import annotations
 import re
 import sys
 import time
+import random
 import logging
 from datetime import datetime
 from pathlib import Path
@@ -14,13 +15,7 @@ from bs4 import BeautifulSoup
 
 
 HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/120.0 Safari/537.36"
-    ),
-    "Referer": "https://db.netkeiba.com/",
-    "Accept-Language": "ja,en-US;q=0.9,en;q=0.8,ko;q=0.7",
+    "User-Agent": "Mozilla/5.0 (compatible; netkeiba-trainer-crawler/1.0)"
 }
 
 BASE_TRAINER_RESULT_URL = "https://db.netkeiba.com/trainer/result.html?id={trno}"
@@ -317,7 +312,7 @@ def main() -> None:
             except Exception as e:
                 logger.error(f"[{i}/{total}] FAIL TRNO={trno} / {e}")
                 failed_trnos.append(trno)
-            time.sleep(0.5)
+            time.sleep(random.uniform(2.0, 3.5))
 
     if failed_trnos:
         logger.warning(f"수집 완료되었으나, {len(failed_trnos)}건의 실패가 있었습니다. (결과 파일: {out_csv})")

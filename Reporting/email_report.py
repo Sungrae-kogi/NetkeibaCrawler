@@ -263,11 +263,45 @@ def send_report_email(final_df, to_emails, venue_jp, date_str, cc_emails=None):
     # 제목: [京都-20260510] 예측과 실제 결과 비교 리포트
     msg['Subject'] = f"[{venue_jp}-{date_str}] 예측과 실제 결과 비교 리포트"
     
+    # HTML 테이블 생성
+    table_html = final_df.to_html(index=False, justify='center')
+    
     date_hyphen = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
     html_content = f"""
     <html>
+    <head>
+        <style>
+            table {{
+                border-collapse: collapse;
+                width: 100%;
+                max-width: 1000px;
+                font-family: 'Malgun Gothic', sans-serif;
+                font-size: 12px;
+                border: 1px solid #dddddd;
+                margin-top: 15px;
+                margin-bottom: 15px;
+            }}
+            th, td {{
+                padding: 8px;
+                text-align: center;
+                border: 1px solid #dddddd;
+            }}
+            th {{
+                background-color: #f2f2f2;
+                font-weight: bold;
+                color: #333333;
+            }}
+            tr:nth-child(even) {{
+                background-color: #f9f9f9;
+            }}
+        </style>
+    </head>
     <body>
         <p>{date_hyphen} {venue_jp} 경기 결과와 예측 비교 리포트를 첨부 파일로 송부합니다.</p>
+        <br/>
+        <h3>📊 [결과 비교 요약 표]</h3>
+        {table_html}
+        <br/>
         <p>감사합니다.</p>
     </body>
     </html>
@@ -301,8 +335,8 @@ def run_reporting_pipeline(venue_jp, date_str, to_emails=None, cc_emails=None):
     cc_emails: 참조 이메일 (문자열 또는 리스트)
     """
     if to_emails is None:
-        # 받는 사람 (1명)
-        to_emails = "ysoh@becurio.com"
+        # 받는 사람 (2명)
+        to_emails = ["ysoh@becurio.com", "rhopritv65@gmail.com"]
     
     if cc_emails is None:
         # 참조 (3명)

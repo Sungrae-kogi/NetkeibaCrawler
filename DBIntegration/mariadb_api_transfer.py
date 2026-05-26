@@ -210,7 +210,7 @@ def execute_transfer(target_date=None, target_venue=None, max_retries=3):
         "3. api_race_plan 삽입": f"""
             INSERT INTO api_race_plan (
                 RCCRS_NM, RACE_DT, RACE_DY_CNT, RACE_DOTW, RACE_NO,
-                RCGRD, RACE_GRADE, RACE_NM, RACE_DS, PTIN_NHR, RACE_CLAS,
+                RACE_GRADE, RCGRD, RACE_NM, RACE_DS, PTIN_NHR, RACE_CLAS,
                 CNDTS_RATG, CNDTS_AG, CNDTS_GNDR, CNDTS_BURD_WGT, CNDTS_NCMR,
                 RPM_FPLC, RPM_SPLC, RPM_TPLC, RPM_FOPLC, RPM_FVPLC,
                 ADMNY_FPLC, ADMNY_SPLC, ADMNY_TPLC,
@@ -223,8 +223,8 @@ def execute_transfer(target_date=None, target_venue=None, max_retries=3):
                 NULL, 
                 MAX(RCDAY), 
                 CAST(NULLIF(TRIM(RIGHT(RCNO, 2)), '') AS UNSIGNED),
+                MAX(RCGRD),
                 REPLACE(REPLACE(REPLACE(MAX(RANK), '1', '１'), '2', '２'), '3', '３'),
-                MAX(RCGRD), 
                 MAX(RCNAME), 
                 CAST(NULLIF(TRIM(MAX(RCDIST)), '') AS UNSIGNED), 
                 CAST(NULLIF(TRIM(MAX(DUSU)), '') AS UNSIGNED), 

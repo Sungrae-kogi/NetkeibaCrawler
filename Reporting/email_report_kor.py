@@ -63,7 +63,7 @@ def fetch_prediction_table(venue_kor, date_str=None):
     mail.login(user_email, user_password)
     mail.select("inbox")
     
-    status, messages = mail.search(None, 'FROM', '"mafeel@becurio.com"')
+    status, messages = mail.search(None, 'FROM', '"cmrhee@becurio.com"')
     mail_ids = messages[0].split()
     
     # [서울-20260516]경주결과 Report 형태 검색 필터 생성
@@ -311,11 +311,45 @@ def send_report_email(final_df, to_emails, venue_kor, date_str, cc_emails=None):
         
     msg['Subject'] = f"[{venue_kor}-{date_str}] 예측과 실제 결과 비교 리포트"
     
+    # HTML 테이블 생성
+    table_html = final_df.to_html(index=False, justify='center')
+    
     date_hyphen = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
     html_content = f"""
     <html>
+    <head>
+        <style>
+            table {{
+                border-collapse: collapse;
+                width: 100%;
+                max-width: 1000px;
+                font-family: 'Malgun Gothic', sans-serif;
+                font-size: 12px;
+                border: 1px solid #dddddd;
+                margin-top: 15px;
+                margin-bottom: 15px;
+            }}
+            th, td {{
+                padding: 8px;
+                text-align: center;
+                border: 1px solid #dddddd;
+            }}
+            th {{
+                background-color: #f2f2f2;
+                font-weight: bold;
+                color: #333333;
+            }}
+            tr:nth-child(even) {{
+                background-color: #f9f9f9;
+            }}
+        </style>
+    </head>
     <body>
         <p>{date_hyphen} {venue_kor} 경기 결과와 예측 비교 리포트를 첨부 파일로 송부합니다.</p>
+        <br/>
+        <h3>📊 [결과 비교 요약 표]</h3>
+        {table_html}
+        <br/>
         <p>감사합니다.</p>
     </body>
     </html>

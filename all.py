@@ -325,7 +325,7 @@ def trigger_external_api(date, venue, is_last=False):
     else:
         # 메인 흐름은 무조건 30분 대기
         logger.info("⏳ API 호출 요청을 전송했습니다. 지금부터 30분(1800초) 대기를 시작합니다...")
-        time.sleep(1800)
+        time.sleep(1200)
         logger.info("⏳ 30분 대기가 완료되었습니다. 다음 단계로 넘어갑니다.")
         
     return True
@@ -506,11 +506,11 @@ def run_result_automation_pipeline(mode):
             else:
                 send_telegram_message(f"⚠️ [{t_venue_jp}-{t_date}] 예측 메일을 찾지 못해 리포트 발송을 건너뛰었습니다.")
                 
-        # 6. 한국(서울, 부산, 제주) 리포트 자동 생성 및 발송 시도
+        # 6. 한국(서울) 리포트 자동 생성 및 발송 시도
         try:
             from Reporting.email_report_kor import run_kor_reporting_pipeline
-            for kor_venue in ["서울", "부산", "제주"]:
-                if run_kor_reporting_pipeline(kor_venue):
+            for kor_venue in ["서울"]:
+                if run_kor_reporting_pipeline(kor_venue, target_date_str):
                     send_telegram_message(f"📧 [{kor_venue}] 한국 결과 리포트 이메일 발송 완료!")
                 else:
                     logger.info(f"⚠️ [{kor_venue}] 최근 예측 메일이 없거나 처리할 수 없어 리포트 발송을 건너뜁니다.")

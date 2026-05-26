@@ -4,7 +4,7 @@ import time
 import hashlib
 import requests
 import re
-import msvcrt
+import os
 import logging
 import pymysql
 from datetime import datetime, timedelta
@@ -35,7 +35,7 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger("Information")
-URL = "http://localhost:8000/mock_information.html"  # 로컬 테스트용 URL
+URL = "https://race.netkeiba.com/top/information.html?rf=sidemenu"
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko)"
 }
@@ -150,75 +150,96 @@ def sync_cancel_to_db(records):
         return
     
     try:
-        new_insert_count = 0
+        # 1. MEET 기준으로 데이터 분류 (그룹화)
+        grouped_records = {}
         for rec in records:
-            rcdate = rec.get("RCDATE")
             meet = rec.get("MEET")
-            rcno = rec.get("RCNO")
-            chulno = rec.get("CHULNO")
-            hrname = rec.get("HRNAME")
-            category = rec.get("CATEGORY")
+            if not meet:
+                continue
+            if meet not in grouped_records:
+                grouped_records[meet] = []
+            grouped_records[meet].append(rec)
             
-            # 1. HRNO 조회
-            hrno = lookup_hrno(conn, rcdate, meet, rcno, chulno)
+        total_new_insert_count = 0
+        
+        # 2. 그룹별 순회 및 DB 적재
+        for meet, meet_records in grouped_records.items():
+            meet_new_insert_count = 0
             
-            # 2. DB 삽입 (이름/사유 등이 바뀔 수 있으므로 UPDATE 처리)
-            with conn.cursor() as cursor:
-                sql = """
-                    INSERT INTO api_race_horse_cancel_info_1 
-                    (CHULNO, HRNAME, HRNO, MEET, RCDATE, RCNO, REASON) 
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
-                    ON DUPLICATE KEY UPDATE 
-                        HRNAME = VALUES(HRNAME),
-                        MEET = VALUES(MEET),
-                        REASON = VALUES(REASON)
-                """
-                cursor.execute(sql, (chulno, hrname, hrno, meet, rcdate, rcno, category))
-                affected = cursor.rowcount
-            
-            # affected == 1: 신규 삽입, affected == 2: 수정됨, affected == 0: 변화 없음
-            # 사용자의 요청에 따라 '신규 삽입'인 경우에만 알림 발송
-            if affected == 1:
-                logger.info(f"💾 [DB 응답] affected: {affected} - (신규 삽입) DB에 없던 새로운 데이터라서 INSERT 되었습니다.")
-                new_insert_count += 1
-                conn.commit()
-                # 3. 알림 발송
-                msg = f"🚩 [신규 취소/제외/중지 정보]\n\n날짜: {rcdate}\n경주: {meet} {rcno}R\n마번: {chulno}번 ({hrname})\n구분: {category}"
-                logger.info(f"DB 신규 적재 완료 및 알림 발송: {hrname} ({rcdate})")
-                send_telegram_message(msg)
+            for rec in meet_records:
+                rcdate = rec.get("RCDATE")
+                rcno = rec.get("RCNO")
+                chulno = rec.get("CHULNO")
+                hrname = rec.get("HRNAME")
+                category = rec.get("CATEGORY")
                 
-                # 4. 외부 API 호출 (출전취소 반영 시스템 트리거) - 현재 비활성화됨
-                try:
-                    # 테스트 URL
-                    deploy_url = f"http://192.168.0.30/schedule/deploy/cancelHorse.do?meet={meet}"
-                    logger.info(f"🚀 외부 API 호출 시도: {deploy_url}")
-                    resp = requests.get(deploy_url, timeout=15)
+                # HRNO 조회
+                hrno = lookup_hrno(conn, rcdate, meet, rcno, chulno)
+                
+                # DB 삽입 (이름/사유 등이 바뀔 수 있으므로 UPDATE 처리)
+                with conn.cursor() as cursor:
+                    sql = """
+                        INSERT INTO api_race_horse_cancel_info_1 
+                        (CHULNO, HRNAME, HRNO, MEET, RCDATE, RCNO, REASON) 
+                        VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        ON DUPLICATE KEY UPDATE 
+                            HRNAME = VALUES(HRNAME),
+                            MEET = VALUES(MEET),
+                            REASON = VALUES(REASON)
+                    """
+                    cursor.execute(sql, (chulno, hrname, hrno, meet, rcdate, rcno, category))
+                    affected = cursor.rowcount
+                
+                if affected == 1:
+                    logger.info(f"💾 [DB 응답] affected: {affected} - (신규 삽입) DB에 없던 새로운 데이터라서 INSERT 되었습니다.")
+                    meet_new_insert_count += 1
+                    total_new_insert_count += 1
+                    conn.commit()
                     
-                    # 🔍 사용자 요청: 응답(Response)에 대한 아주 상세한 로그
+                    # 텔레그램 발송 (건별 상세 알림 유지)
+                    msg = f"🚩 [신규 취소/제외/중지 정보]\n\n날짜: {rcdate}\n경주: {meet} {rcno}R\n마번: {chulno}번 ({hrname})\n구분: {category}"
+                    logger.info(f"DB 신규 적재 완료 및 알림 발송: {hrname} ({rcdate})")
+                    send_telegram_message(msg)
+                    
+                elif affected == 2:
+                    logger.info(f"💾 [DB 응답] affected: {affected} - (수정됨) 이미 DB에 존재하지만 일부 값(이름/사유 등)이 달라서 UPDATE 되었습니다.")
+                    conn.commit()
+                    logger.info(f"🔄 기존 정보 수정됨 (알림 미발송): {hrname} ({rcdate})")
+                else:
+                    logger.info(f"💾 [DB 응답] affected: {affected} - (변화 없음) 이미 DB에 존재하고 모든 값이 완벽히 동일하여 무시(No-op)되었습니다.")
+                    logger.info(f"⏭️ 중복 패스 (변화 없음): {rcdate} {meet} {rcno}R {hrname}")
+            
+            # 3. MEET별 처리가 끝난 후, 카운트 확인 후 외부 API 1회 발송
+            if meet_new_insert_count > 0:
+                try:
+                    deploy_url = f"http://j.mafeel.ai/schedule/deploy/cancelHorse.do?meet={meet}"
+                    logger.info(f"🚀 외부 API 호출 시도 (MEET 단위 일괄 1회 발송, 최대 10분 대기): {deploy_url}")
+                    resp = requests.get(deploy_url, timeout=600)
+                    
                     logger.info(f"📊 [API 응답 상세] 상태코드: {resp.status_code}")
                     logger.info(f"📊 [API 응답 상세] 소요시간: {resp.elapsed.total_seconds():.2f}초")
                     logger.info(f"📊 [API 응답 상세] 헤더: {dict(resp.headers)}")
-                    logger.info(f"📊 [API 응답 상세] 본문(Text): {resp.text[:1000]}") # 너무 길면 로그창이 도배되므로 1000자까지만 출력
+                    logger.info(f"📊 [API 응답 상세] 본문(Text): {resp.text[:1000]}") 
                     
-                    if resp.status_code == 200:
-                        logger.info(f"✅ 외부 API 호출 성공")
-                    else:
-                        logger.warning(f"⚠️ 외부 API 호출 실패")
+                    try:
+                        resp_json = resp.json()
+                        if resp.status_code == 200 and resp_json.get("result") == "OK":
+                            logger.info(f"✅ 외부 API 호출 완벽 성공! ({meet} 처리 완료)")
+                        else:
+                            logger.warning(f"⚠️ API는 호출되었으나 반환값이 OK가 아닙니다. ({meet})")
+                    except ValueError:
+                        if resp.status_code == 200:
+                            logger.warning(f"✅ API 상태는 200이나, JSON 응답(result=OK)이 아닙니다. ({meet})")
+                        else:
+                            logger.warning(f"⚠️ 외부 API 호출 실패 ({meet})")
+                            
                 except requests.exceptions.Timeout:
-                    logger.error(f"🚨 [치명적 경고] 외부 API 호출 중 타임아웃(15초 초과) 발생! 서버 작업이 안 끝났는데 파이썬이 기다리다 지쳐 다음 로직으로 넘어갑니다!!")
+                    logger.error(f"🚨 [치명적 경고] 외부 API 호출 중 타임아웃(3분 초과) 발생 ({meet})!")
                 except Exception as e:
-                    logger.error(f"🚨 외부 API 호출 중 오류 발생: {e}")
-                    
-            elif affected == 2:
-                logger.info(f"💾 [DB 응답] affected: {affected} - (수정됨) 이미 DB에 존재하지만 일부 값(이름/사유 등)이 달라서 UPDATE 되었습니다.")
-                conn.commit()
-                logger.info(f"🔄 기존 정보 수정됨 (알림 미발송): {hrname} ({rcdate})")
-            else:
-                logger.info(f"💾 [DB 응답] affected: {affected} - (변화 없음) 이미 DB에 존재하고 모든 값이 완벽히 동일하여 무시(No-op)되었습니다.")
-                logger.info(f"⏭️ 중복 패스 (변화 없음): {rcdate} {meet} {rcno}R {hrname}")
-                
-        if new_insert_count > 0:
-            logger.info(f"✅ 총 {new_insert_count}건의 신규 데이터가 DB에 적재되었습니다.")
+                    logger.error(f"🚨 외부 API 호출 중 오류 발생 ({meet}): {e}")
+
+        if total_new_insert_count > 0:
+            logger.info(f"✅ 총 {total_new_insert_count}건의 신규 데이터가 DB에 적재되었습니다.")
             
     except Exception as e:
         logger.error(f"DB 동기화 중 오류 발생: {e}")
@@ -231,7 +252,7 @@ def fetch_and_parse():
     try:
         r = http.get(URL, headers=HEADERS, timeout=15)
         # 넷케이바 인코딩 보정
-        r.encoding = "utf-8"  # 로컬 mock 테스트를 위해 UTF-8로 명시 (실제 넷케이바는 "EUC-JP"를 씁니다)
+        r.encoding = "EUC-JP"
         r.raise_for_status()
     except Exception as e:
         logger.error(f"페이지 구조를 가져오는데 실패했습니다 (재시도 후 최종 실패): {e}")
@@ -370,35 +391,53 @@ def save_cancel_csv(records):
         for row in reversed(records):
             writer.writerow(row)
 
-def sleep_with_cancel(seconds):
-    """지정된 초만큼 대기하며 'q' 입력 시 중단합니다."""
-    for _ in range(seconds):
-        if msvcrt.kbhit():
-            key = msvcrt.getch().decode('utf-8').lower()
-            if key == 'q':
-                return True
-        time.sleep(1)
-    return False
-
 def main():
     logger.info("==============================================================")
-    logger.info("🐎 Netkeiba Information 모니터링 봇 시작")
-    logger.info("종료하시려면 터미널 창을 닫거나 키보드에서 [Ctrl + C] 를 누르세요.")
+    logger.info("🐎 Netkeiba Information 단발성(Cron/스케줄러) 수집 시작")
     logger.info("==============================================================\n")
     
-    while True:
+    flag_file = BASE_DIR / "flag.txt"
+    
+    # 1. Lock 파일 존재 여부 및 타임스탬프 기반 Stale Lock 체크
+    if flag_file.exists():
         try:
-            fetch_and_parse()
+            with open(flag_file, "r") as f:
+                content = f.read().strip()
+                started_at = float(content) if content else 0.0
+                
+            if time.time() - started_at > 1800:  # 30분 초과
+                logger.warning("🚨 [Stale Lock 감지] 이전 작업이 30분 이상 지연되어 비정상 종료로 간주하고 Lock을 해제합니다.")
+                os.remove(flag_file)
+            else:
+                logger.info("⏳ 이전 주기의 스크립트가 아직 정상 실행 중입니다. 중복 실행을 방지하기 위해 이번 주기를 스킵(종료)합니다.")
+                return
         except Exception as e:
-            logger.error(f"예기치 못한 시스템 오류 발생: {e}")
-            logger.info("10초 후 재시도합니다...")
-            time.sleep(10)
-            continue
-
-        logger.info("2분 뒤에 다시 확인합니다... (대기 중, 중단하고 메뉴로 돌아가려면 'q' 입력)\n")
-        if sleep_with_cancel(120):
-            logger.info("\n[안내] 사용자에 의해 모니터링 대기가 중단되었습니다.")
-            break
+            logger.error(f"flag.txt 읽기 중 오류 발생 (안전을 위해 강제 삭제 후 진행 시도): {e}")
+            try:
+                os.remove(flag_file)
+            except:
+                pass
+                
+    # 2. Lock 파일 생성
+    try:
+        with open(flag_file, "w") as f:
+            f.write(str(time.time()))
+    except Exception as e:
+        logger.error(f"flag.txt 생성 실패! 동시성 제어가 보장되지 않습니다: {e}")
+    
+    # 3. 데이터 수집 본 작업 실행
+    try:
+        fetch_and_parse()
+        logger.info("\n✅ [안내] 수집 및 처리 작업이 정상적으로 완료되었습니다.")
+    except Exception as e:
+        logger.error(f"❌ [에러] 예기치 못한 시스템 오류 발생: {e}")
+        
+    # 4. Lock 파일 삭제 (정상/비정상 무관, 사용자의 단일 흐름 요청 적용)
+    try:
+        if flag_file.exists():
+            os.remove(flag_file)
+    except Exception as e:
+        logger.error(f"flag.txt 삭제 중 오류 발생: {e}")
 
 if __name__ == "__main__":
     main()
