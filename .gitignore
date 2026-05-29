@@ -16,6 +16,8 @@ env/
 
 config.json
 db_config.json
+db_config_test.json
 storage_state.json
 *.xlsx
+*.log
 naverworks_config.json
