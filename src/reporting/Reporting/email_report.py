@@ -397,7 +397,7 @@ def run_reporting_pipeline(venue_jp, date_str, to_emails=None, cc_emails=None):
     else:
         if to_emails is None:
             # 받는 사람 (2명) : 오영섭 사장님, 일본 노승균 해외사업 본부장님
-            to_emails = ["ysoh@becurio.com", "rhopritv65@gmail.com"]
+            to_emails = ["ysoh@becurio.com"]
         
         if cc_emails is None:
             # 참조 (3명)

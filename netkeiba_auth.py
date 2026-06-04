@@ -5,7 +5,7 @@ from playwright.sync_api import sync_playwright
 
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = BASE_DIR / "config" / "config.json"
-SESSION_PATH = BASE_DIR / "storage_state.json"
+SESSION_PATH = BASE_DIR / "storage_state.json"          # Session 쿠키 저장.
 
 def get_netkeiba_cookies(force_login=True):
     """
@@ -14,7 +14,7 @@ def get_netkeiba_cookies(force_login=True):
     """
     if force_login or not SESSION_PATH.exists():
         print("🔑 최신 세션 확보를 위해 자동 로그인을 강제 실행합니다...")
-        run_auto_login(headless=True)
+        run_auto_login(headless=False)
     
     try:
         with open(SESSION_PATH, "r", encoding="utf-8") as f:
@@ -29,7 +29,7 @@ def get_netkeiba_cookies(force_login=True):
     except Exception as e:
         print(f"❌ 세션 로드 중 오류 발생: {e}")
         # 오류 시 1회에 한해 다시 강제 로그인 시도
-        run_auto_login(headless=True)
+        run_auto_login(headless=False)
         try:
             with open(SESSION_PATH, "r", encoding="utf-8") as f:
                 storage_state = json.load(f)
@@ -41,7 +41,7 @@ def get_netkeiba_cookies(force_login=True):
             print(f"❌ 최종 세션 확보 실패: {ex}")
             return {}
 
-def run_auto_login(headless=True):
+def run_auto_login(headless=False):
     """Playwright를 사용하여 자동 로그인을 수행하고 세션을 저장합니다."""
     if not CONFIG_PATH.exists():
         raise FileNotFoundError("❌ config.json 파일이 없습니다. 설정을 먼저 완료해 주세요.")

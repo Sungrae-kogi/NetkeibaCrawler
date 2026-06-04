@@ -897,12 +897,14 @@ def main():
 
     from netkeiba_auth import cleanup_session
 
+    # main.py 초기 실행시 프리미엄 세션 로딩 및 종료전까지 재사용??? 이 구족가 가능한가?
+    
     try:
         # 0. 넷케이바 프리미엄 세션 자동 확인 및 강제 생성
         print("\n" + "="*60)
         print("넷케이바 프리미엄 세션 자동 확인 및 최신 쿠키 생성 중...")
         try:
-            get_netkeiba_cookies(force_login=True)
+            get_netkeiba_cookies(force_login=True)  #force_login = True로 무조건 로그인 강제 시도처리
             print("세션 준비 완료!")
         except Exception as e:
             print(f"자동 로그인 실패: {e}")

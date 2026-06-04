@@ -97,7 +97,7 @@ if __name__ == "__main__":
 
     logger.info("🔑 Playwright 프리미엄 세션을 로드하여 결과 수집을 시작합니다...")
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
+        browser = p.chromium.launch(headless=False)
         context_args = {"storage_state": str(state_path)}
 
         context = browser.new_context(**context_args)
