@@ -111,6 +111,7 @@ def print_menu():
     print(" --auto 4 : 지난 토요일 결과 자동화 (1 -> 8 -> 9 수행 + 결과 리포트 메일 발송)")
     print(" --auto 5 : 지난 일요일 결과 자동화 (1 -> 8 -> 9 수행 + 결과 리포트 메일 발송)")
     print(" --auto 6 : 지난 주 구간별 기록 자동 업데이트 (금요일 18:00 권장)")
+    print(" --auto 7 : 한국 결과 리포트 자동 생성 및 발송")
     print("=" * 60)
     print("크롤링 모드를 선택하세요:")
     print("  1. 과거 경기 결과 수집 (날짜+장소 입력 자동 탐색)")
@@ -512,17 +513,6 @@ def run_result_automation_pipeline(mode):
             else:
                 send_telegram_message(f"⚠️ [{t_venue_jp}-{t_date}] 예측 메일을 찾지 못해 리포트 발송을 건너뛰었습니다.")
                 
-        # 6. 한국(서울) 리포트 자동 생성 및 발송 시도
-        try:
-            from src.reporting.Reporting.email_report_kor import run_kor_reporting_pipeline
-            for kor_venue in ["서울"]:
-                if run_kor_reporting_pipeline(kor_venue, target_date_str):
-                    send_telegram_message(f"📧 [{kor_venue}] 한국 결과 리포트 이메일 발송 완료!")
-                else:
-                    logger.info(f"⚠️ [{kor_venue}] 최근 예측 메일이 없거나 처리할 수 없어 리포트 발송을 건너뜁니다.")
-        except Exception as e:
-            logger.error(f"한국 결과 리포트 발송 중 에러 발생: {e}")
-            
         logger.info(f"\n✅ {day_name} 모든 결과 자동화 작업이 성공적으로 종료되었습니다. 프로그램을 종료합니다.")
         sys.exit(0)
 
@@ -558,6 +548,40 @@ def run_lap_time_automation():
             
     send_telegram_message(f"✅ 지난 주말({target_dates[0]}~{target_dates[1]}) 구간 기록 자동 업데이트 완료!")
     logger.info("✅ 모든 자동 업데이트 작업이 완료되었습니다.")
+
+def run_kor_result_reporting_pipeline():
+    """한국(서울) 리포트 자동 생성 및 발송 파이프라인 (--auto 7)"""
+    from datetime import datetime, timedelta
+    
+    today = datetime.today()
+    # 오늘이 토요일(5) 또는 일요일(6)이면 오늘 날짜를 그대로 사용
+    # 그 외 평일이면 가장 최근의 일요일(6)을 타겟으로 함
+    if today.weekday() in [5, 6]:
+        target_date = today
+    else:
+        days_diff = 6 - today.weekday()
+        if days_diff > 0:
+            days_diff -= 7
+        target_date = today + timedelta(days=days_diff)
+        
+    target_date_str = target_date.strftime("%Y%m%d")
+    
+    send_telegram_message(f"🚀 [한국 결과] 리포트 자동화 파이프라인 시작 (대상: {target_date_str})")
+    logger.info(f"========== 한국 결과 리포트 자동화 시작: 타겟 날짜 {target_date_str} ==========")
+    
+    try:
+        from src.reporting.Reporting.email_report_kor import run_kor_reporting_pipeline
+        for kor_venue in ["서울"]:
+            if run_kor_reporting_pipeline(kor_venue, target_date_str):
+                send_telegram_message(f"📧 [{kor_venue}] 한국 결과 리포트 이메일 발송 완료! (대상: {target_date_str})")
+            else:
+                logger.info(f"⚠️ [{kor_venue}] 최근 예측 메일이 없거나 처리할 수 없어 리포트 발송을 건너뜁니다. (대상: {target_date_str})")
+    except Exception as e:
+        logger.error(f"한국 결과 리포트 발송 중 에러 발생: {e}")
+        send_telegram_message(f"❌ 한국 결과 리포트 발송 중 에러 발생: {e}")
+        
+    logger.info(f"\n✅ 한국 결과 자동화 작업이 성공적으로 종료되었습니다. 프로그램을 종료합니다.")
+    sys.exit(0)
 
 from datetime import timedelta
 
@@ -892,7 +916,7 @@ def main():
 
     import argparse
     parser = argparse.ArgumentParser(description="넷케이바 자동화 마스터 파이프라인")
-    parser.add_argument("--auto", choices=["2", "3", "4", "5", "6"], help="자동화 모드 실행 (2:토 계획, 3:일 계획, 4:토 결과, 5:일 결과, 6:지난주 구간기록)")
+    parser.add_argument("--auto", choices=["2", "3", "4", "5", "6", "7"], help="자동화 모드 실행 (2:토 계획, 3:일 계획, 4:토 결과, 5:일 결과, 6:지난주 구간기록, 7:한국 결과리포트)")
     args = parser.parse_args()
 
     from netkeiba_auth import cleanup_session
@@ -920,6 +944,9 @@ def main():
             return
         elif args.auto == "6":
             run_lap_time_automation()
+            return
+        elif args.auto == "7":
+            run_kor_result_reporting_pipeline()
             return
 
         # 2. 대화형 수동 모드 루프
