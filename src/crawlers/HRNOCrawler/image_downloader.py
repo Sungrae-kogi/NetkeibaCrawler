@@ -23,11 +23,6 @@ if not logger.handlers:
     ch = logging.StreamHandler()
     ch.setFormatter(formatter)
     logger.addHandler(ch)
-    
-    log_file = LOG_DIR / f"image_downloader_{datetime.now().strftime('%Y%m%d')}.log"
-    fh = logging.FileHandler(log_file, encoding='utf-8')
-    fh.setFormatter(formatter)
-    logger.addHandler(fh)
 
 def reconnect_vpn():
     """NordVPN CLI를 사용하여 VPN 연결을 재시작합니다."""

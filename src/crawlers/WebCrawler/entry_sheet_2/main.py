@@ -2,6 +2,8 @@ import csv
 import time
 import random
 import sys
+import logging
+from datetime import datetime
 from pathlib import Path
 import requests
 from bs4 import BeautifulSoup
@@ -10,6 +12,23 @@ from parser import parse_api_entry_sheet_2
 # 자동 인증 모듈 추가 (루트 디렉토리 참조를 위해 parent 5번 호출)
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent.parent.parent))
 from netkeiba_auth import get_netkeiba_cookies
+
+# 로깅 설정
+BASE_DIR = Path(__file__).resolve().parent
+LOG_DIR = BASE_DIR.parent.parent.parent.parent / "logs"
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+date_str = datetime.now().strftime("%Y%m%d")
+LOG_FILE = LOG_DIR / f"{date_str}_EntrySheet.log"
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout)
+    ],
+    force=True
+)
+logger = logging.getLogger("EntrySheet")
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko)"
@@ -47,14 +66,14 @@ def main():
     data_dir.mkdir(parents=True, exist_ok=True)
 
     # 자동 인증 모듈을 통해 쿠키 획득
-    print("🔑 프리미엄 세션 자동 확인 중...")
+    logger.info("🔑 프리미엄 세션 자동 확인 중...")
     try:
         cookies = get_netkeiba_cookies(force_login=False)
     except Exception as e:
-        print(f"⚠️ 세션 확보 실패 (일반 모드로 진행): {e}")
+        logger.warning(f"⚠️ 세션 확보 실패 (일반 모드로 진행): {e}")
         cookies = {}
 
-    print(f"========== api_entry_sheet_2 수집 시작 (Base ID: {prefix}, {start_idx}R ~ 12R) ==========")
+    logger.info(f"========== api_entry_sheet_2 수집 시작 (Base ID: {prefix}, {start_idx}R ~ 12R) ==========")
     
     any_failed = False
     # 추출된 시작 번호부터 12경주까지 수집
@@ -62,7 +81,7 @@ def main():
         race_id = f"{prefix}{i:02d}"
         url = base_url_template.format(race_id)
         
-        print(f"[{i:02d}/12] 요청 중: {url}")
+        logger.info(f"[{i:02d}/12] 요청 중: {url}")
         try:
             r = requests.get(url, headers=HEADERS, cookies=cookies, timeout=15)
             r.encoding = "EUC-JP"
@@ -70,7 +89,7 @@ def main():
             
             soup = BeautifulSoup(r.text, "lxml")
             if not soup.select_one(".RaceList_Item02"):
-                print(f"  -> 경기가 존재하지 않습니다. 건너뜁니다.")
+                logger.info(f"  -> 경기가 존재하지 않습니다. 건너뜁니다.")
                 continue
                 
             # Fetch Odds JSON data
@@ -80,21 +99,21 @@ def main():
                 odds_r.raise_for_status()
                 odds_data = odds_r.json()
             except Exception as e:
-                print(f"  -> 경고: 배당률 API 호출 실패 ({e})")
+                logger.warning(f"  -> 경고: 배당률 API 호출 실패 ({e})")
                 odds_data = None
 
             entries = parse_api_entry_sheet_2(soup, url, odds_data)
             if not entries:
-                print(f"  -> 경고: {race_id}에서 데이터를 파싱하지 못했습니다.")
+                logger.warning(f"  -> 경고: {race_id}에서 데이터를 파싱하지 못했습니다.")
                 any_failed = True
                 continue
 
             all_entries.extend(entries)
             race_name = entries[0]['RCNAME']
-            print(f"  -> 수집 성공: {race_name} (출전마 {len(entries)}마리 추가됨)")
+            logger.info(f"  -> 수집 성공: {race_name} (출전마 {len(entries)}마리 추가됨)")
 
         except Exception as e:
-            print(f"  -> 에러 발생 ({race_id}): {e}")
+            logger.error(f"  -> 에러 발생 ({race_id}): {e}")
             any_failed = True
             
         time.sleep(random.uniform(0.7, 1.5))
@@ -121,7 +140,7 @@ def main():
             writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
             writer.writeheader()
             writer.writerows(all_entries)
-        print(f"\n[완료] 결과 저장(Overwrite): {final_out_csv} (총 {len(all_entries)}줄)")
+        logger.info(f"[완료] 결과 저장(Overwrite): {final_out_csv} (총 {len(all_entries)}줄)")
 
         # PK 추출 및 분배 저장 로직
         pks = {"HRNO": set(), "JKNO": set(), "TRNO": set()}
@@ -155,9 +174,9 @@ def main():
                     for item in sorted(pks[key]):
                         writer.writerow([item])
                     
-        print(f"[완료] PK 분배 저장: HRNO({len(pks['HRNO'])}), JKNO({len(pks['JKNO'])}), TRNO({len(pks['TRNO'])})")
+        logger.info(f"[완료] PK 분배 저장: HRNO({len(pks['HRNO'])}), JKNO({len(pks['JKNO'])}), TRNO({len(pks['TRNO'])})")
     else:
-        print("[경고] 수집된 데이터가 없습니다.")
+        logger.warning("수집된 데이터가 없습니다.")
 
     if any_failed:
         sys.exit(2)

@@ -44,7 +44,6 @@ LOG_DIR = BASE_DIR / "logs"
 LOG_DIR.mkdir(exist_ok=True)
 date_str = datetime.now().strftime("%Y%m%d")
 LOG_FILE = LOG_DIR / f"{date_str}_Master.log"
-WEBCRAWLER_LOG = LOG_DIR / f"{date_str}_WebCrawler.log"
 
 class Tee(object):
     def __init__(self, *files):
@@ -65,21 +64,39 @@ class Tee(object):
 
 # 로그 파일 오픈 (a 모드)
 master_f = open(LOG_FILE, 'a', encoding='utf-8')
-web_f = open(WEBCRAWLER_LOG, 'a', encoding='utf-8')
 
 # 표준 출력/에러 리다이렉션
 original_stdout = sys.stdout
-sys.stdout = Tee(sys.stdout, master_f, web_f)
-sys.stderr = Tee(sys.stderr, master_f, web_f)
+sys.stdout = Tee(sys.stdout, master_f)
+sys.stderr = Tee(sys.stderr, master_f)
 
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(message)s',
     handlers=[
-        logging.StreamHandler(original_stdout) # 오리지널 stdout으로 보내면 Tee가 가로채서 파일에도 기록함
+        logging.StreamHandler(sys.stdout) # sys.stdout(Tee로 감싸짐)으로 보내서 콘솔과 파일 모두에 기록되도록 수정
     ]
 )
 logger = logging.getLogger("Master")
+
+import msvcrt
+
+LOCK_FILE_PATH = BASE_DIR / "app.lock"
+lock_file_handle = None
+
+def acquire_app_lock():
+    global lock_file_handle
+    try:
+        lock_file_handle = open(LOCK_FILE_PATH, 'w')
+        # Acquire lock on the file
+        msvcrt.locking(lock_file_handle.fileno(), msvcrt.LK_NBLCK, 1)
+        logger.info("🔒 프로그램 실행 독점 권한(Lock)을 획득했습니다.")
+    except (IOError, OSError):
+        logger.error("⚠️ 이미 다른 Netkeiba Crawler 인스턴스가 실행 중입니다. 안전을 위해 프로그램을 즉시 종료합니다.")
+        sys.exit(0)
+
+# 실행 즉시 중복 실행 방지 락 획득 시도
+acquire_app_lock()
 
 WEB_CRAWLER_DIR = BASE_DIR / "src" / "crawlers" / "WebCrawler"
 ENTRY_SHEET_DIR = WEB_CRAWLER_DIR / "entry_sheet_2"
@@ -140,6 +157,38 @@ def extract_suffix_from_filename(csv_path: Path, prefix: str) -> str:
         return stem[len(prefix):]
     return "unknown"
 
+def run_subprocess_with_logging(cmd, cwd, env=None):
+    """자식 프로세스의 출력을 실시간으로 읽어와 부모의 sys.stdout 스트림에 전달합니다."""
+    import subprocess
+    try:
+        process = subprocess.Popen(
+            cmd,
+            cwd=cwd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding='utf-8',
+            errors='replace',
+            env=env
+        )
+    except Exception as e:
+        logger.error(f"프로세스 가동 실패: {cmd} / {e}")
+        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr=str(e))
+
+    stdout_lines = []
+    while True:
+        line = process.stdout.readline()
+        if not line and process.poll() is not None:
+            break
+        if line:
+            sys.stdout.write(line)
+            sys.stdout.flush()
+            stdout_lines.append(line)
+
+    returncode = process.poll()
+    return subprocess.CompletedProcess(cmd, returncode, stdout="".join(stdout_lines))
+
+
 def run_child_crawlers(date_str: str, max_retries: int = 3):
     logger.info(f"\n========== [Phase 3] 하위 디테일 크롤러 연쇄 가동 (날짜/장소: {date_str}) ==========")
     
@@ -151,17 +200,17 @@ def run_child_crawlers(date_str: str, max_retries: int = 3):
         
         # 1. HRNOCrawler
         logger.info(f"▶ [1/3] HRNOCrawler 가동 중...")
-        res = subprocess.run([sys.executable, "main.py", date_str], cwd=HR_DIR)
+        res = run_subprocess_with_logging([sys.executable, "main.py", date_str], cwd=HR_DIR)
         if res.returncode == 2: any_failed = True
         
         # 2. JKNOCrawler
         logger.info(f"▶ [2/3] JKNOCrawler 가동 중...")
-        res = subprocess.run([sys.executable, "main.py", date_str], cwd=JK_DIR)
+        res = run_subprocess_with_logging([sys.executable, "main.py", date_str], cwd=JK_DIR)
         if res.returncode == 2: any_failed = True
         
         # 3. TRNOCrwaler
         logger.info(f"▶ [3/3] TRNOCrwaler 가동 중...")
-        res = subprocess.run([sys.executable, "main.py", date_str], cwd=TR_DIR)
+        res = run_subprocess_with_logging([sys.executable, "main.py", date_str], cwd=TR_DIR)
         if res.returncode == 2: any_failed = True
                 
         if not any_failed:
@@ -181,7 +230,7 @@ def run_mode_1_logic(url: str, max_retries: int = 3):
     success = False
     for attempt in range(1, max_retries + 1):
         if attempt > 1: logger.info(f"--- [Mode 1 재시도] {attempt}/{max_retries} 회차 ---")
-        res = subprocess.run([sys.executable, "main.py", url], cwd=WEB_CRAWLER_DIR)
+        res = run_subprocess_with_logging([sys.executable, "main.py", url], cwd=WEB_CRAWLER_DIR)
         
         if res.returncode == 0:
             success = True
@@ -203,7 +252,7 @@ def run_mode_1_logic(url: str, max_retries: int = 3):
         return
         
     latest_csv = max(csv_files, key=lambda p: p.stat().st_mtime)
-    subprocess.run([sys.executable, "no_divider_from_race_result.py", latest_csv.name], cwd=WEB_CRAWLER_DIR)
+    run_subprocess_with_logging([sys.executable, "no_divider_from_race_result.py", latest_csv.name], cwd=WEB_CRAWLER_DIR)
     
     suffix = extract_suffix_from_filename(latest_csv, "race_planning_")
     # run_child_crawlers(suffix)  # 자동화 모드에서는 검증 후 별도 호출
@@ -211,10 +260,22 @@ def run_mode_1_logic(url: str, max_retries: int = 3):
 def run_mode_2_logic(url: str, max_retries: int = 3):
     logger.info(f"\n▶ [Phase 1 & 2] 경기 계획 수집 및 PK 분배: {url}")
     
+    """
+    2026.06.09
+    Mode 2 로직은 경주 계획이 수집된 이후에 실행되어야 함.
+    main.py에서 "Mode 2"를 호출하는 방식을 사용하고 있음.
+    경주 계획이 모두 수집되었는지 확인한 후에 실행되어야 함.
+
+    6월 6일 이슈사항 -> 프로세스가 2개가 띄워져서 재시도가 3번 되었음. 총 7회의 API call이 발생함. 
+    테스트 출력 찍어봐야하는 부분.
+
+    """
+
     success = False
     for attempt in range(1, max_retries + 1):
         if attempt > 1: logger.info(f"--- [Mode 2 재시도] {attempt}/{max_retries} 회차 ---")
-        res = subprocess.run([sys.executable, "main.py", url], cwd=ENTRY_SHEET_DIR)
+
+        res = run_subprocess_with_logging([sys.executable, "main.py", url], cwd=ENTRY_SHEET_DIR)
         
         if res.returncode == 0:
             success = True
@@ -313,7 +374,7 @@ def _api_call_thread(url):
         logger.warning(f"백그라운드 API 호출 중 연결 끊김 (서버 작업은 계속될 수 있음): {e}")
 
 def trigger_external_api(date, venue, is_last=False):
-    """외부 AI 예측 시스템 API 호출 (비동기 및 30분 강제 대기 방식)"""
+    """외부 AI 예측 시스템 API 호출 (비동기 및 25분 강제 대기 방식)"""
     app_env = os.environ.get("APP_ENV", "prod").lower()
     if app_env == "test":
         logger.info(f"⚙️  [실행 환경] 테스트 환경이므로 외부 API 호출을 건너뜁니다. (대기 없이 즉시 완료 처리) [대상: {date} {venue}]")
@@ -331,30 +392,46 @@ def trigger_external_api(date, venue, is_last=False):
         logger.info("⏳ 마지막 경기장의 API 호출을 전송했습니다. 대기 없이 종료 절차로 넘어갑니다.")
     else:
         # 메인 흐름은 무조건 30분 대기
-        logger.info("⏳ API 호출 요청을 전송했습니다. 지금부터 30분(1800초) 대기를 시작합니다...")
+        logger.info("⏳ API 호출 요청을 전송했습니다. 지금부터 25분(1500초) 대기를 시작합니다...")
         time.sleep(1500)
-        logger.info("⏳ 30분 대기가 완료되었습니다. 다음 단계로 넘어갑니다.")
+        logger.info("⏳ 25분 대기가 완료되었습니다. 다음 단계로 넘어갑니다.")
         
     return True
 
+def disconnect_vpn_and_wait():
+    """크롤링이 끝난 후 DB 및 API 통신을 위해 VPN을 해제하고 10초간 대기합니다."""
+    nordvpn_path = r"C:\Program Files\NordVPN\nordvpn.exe"
+    if Path(nordvpn_path).exists():
+        logger.info("🌐 [보안] 크롤링 종료. DB/API 접근을 위해 VPN을 해제하고 10초 안정화 대기합니다...")
+        subprocess.run([nordvpn_path, "-d"], shell=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        time.sleep(10)
+
 def run_automation_pipeline(mode):
-    """완전 자동화 파이프라인 루프 (10분 간격 스캔 -> DB -> API)"""
+    """완전 자동화 파이프라인 (최대 1회 재시도, range(1, 3))"""
     day_name = "토요일" if mode == "2" else "일요일" # mode2:토요일, mode3:일요일 
     weekday_target = 5 if mode == "2" else 6 # 5:토요일, 6:일요일 
     
-    logger.info(f"\n{'='*60}\n🤖 {day_name} 경기 자동화 파이프라인 가동\n{'='*60}")
+    logger.info(f"\n{'='*60}\n🤖 {day_name} 경기 자동화 파이프라인 가동 (최대 1회 재시도)\n{'='*60}")
     
-    while True:
-        logger.info(f"\n[시간: {datetime.now().strftime('%H:%M:%S')}] 데이터 스캔 및 수집 시도 중...")
+    max_retries = 1
+    retry_delay = 1 if os.environ.get("APP_ENV", "prod").lower() == "test" else 600  # 테스트 환경에선 1초, 평소엔 10분 대기
+    
+    success = False
+    for attempt in range(1, 3):  # 1, 2 총 2회 시도
+        logger.info(f"\n[시간: {datetime.now().strftime('%H:%M:%S')}] 데이터 스캔 및 수집 시도 중... ({attempt}/2 회차)")
         
         # 1. 대상 탐색
         all_targets = get_all_target_races()
         targets = [t for t in all_targets if datetime.strptime(t['date'], "%Y%m%d").weekday() == weekday_target]
         
         if not targets:
-            logger.warning(f"🔍 탐색된 {day_name} 경기가 없습니다. 10분 후 다시 시도합니다.")
-            time.sleep(600)
-            continue
+            if attempt < 2:
+                logger.warning(f"🔍 탐색된 {day_name} 경기가 없습니다. {retry_delay}초 후 다시 시도합니다.")
+                time.sleep(retry_delay)
+                continue
+            else:
+                logger.error("❌ 재시도했으나 대상 경기가 발견되지 않아 자동화를 취소합니다.")
+                sys.exit(0)
         
         # 2. 날씨 및 메인 크롤링 실행 (기존 로직 활용)
         process_plan_targets(targets)
@@ -367,10 +444,19 @@ def run_automation_pipeline(mode):
                 break
         
         if not all_valid:
-            logger.info("⚠️ 일부 데이터가 아직 미완성 상태입니다. 10분 후 재시도합니다.")
-            time.sleep(600)
-            continue
+            if attempt < 2:
+                logger.info(f"⚠️ 일부 데이터가 아직 미완성 상태입니다. {retry_delay}초 후 다시 시도합니다.")
+                time.sleep(retry_delay)
+                continue
+            else:
+                logger.error("❌ 재시도했으나 일부 데이터가 여전히 미완성 상태입니다. 종료합니다.")
+                sys.exit(1)
         
+        # 모든 검증을 정상 통과한 경우 루프 탈출
+        success = True
+        break
+
+    if success:
         logger.info("✨ 모든 경기 계획 데이터 수집 및 검증 완료! 하위 상세 데이터 수집을 시작합니다.")
         
         # 3.5 하위 디테일 크롤러 가동 (모든 경기장 대상)
@@ -387,6 +473,9 @@ def run_automation_pipeline(mode):
 
         logger.info("✨ 모든 데이터 수집 및 검증 완료! 후속 작업을 진행합니다.")
         
+        # 크롤링 완료 후 VPN 연결 해제 (DB/API는 로컬 IP로 접근)
+        disconnect_vpn_and_wait()
+        
         # 4. DB 업로드 (6번) 및 API 이관 (7번) - 경기장별 순차 처리
         # 중복 실행 방지를 위해 유니크한 날짜/경기장 조합 추출
         processed_combos = []
@@ -394,7 +483,8 @@ def run_automation_pipeline(mode):
             combo = (t['date'], t['venue'])
             if combo not in processed_combos:
                 processed_combos.append(combo)
-                
+        
+        # (날짜, 경기장) 의 combo 형식으로 담긴 리스트를 순회하면서 반복
         for idx, combo in enumerate(processed_combos):
             t_date, t_venue = combo
             is_last_item = (idx == len(processed_combos) - 1)
@@ -423,7 +513,7 @@ def run_automation_pipeline(mode):
         sys.exit(0)
 
 def run_result_automation_pipeline(mode):
-    """과거 결과 자동화 모드 메인 루프 (--auto 4: 토요일, --auto 5: 일요일)"""
+    """과거 결과 자동화 모드 (최대 1회 재시도, range(1, 3))"""
     from datetime import datetime, timedelta
     
     target_weekday = 5 if mode == "4" else 6
@@ -439,15 +529,23 @@ def run_result_automation_pipeline(mode):
     send_telegram_message(f"🚀 [{day_name}] 결과 데이터 자동화 파이프라인 시작 (대상: {target_date_str})")
     logger.info(f"========== {day_name} 자동화 시작: 타겟 날짜 {target_date_str} ==========")
     
-    while True:
-        logger.info(f"🔍 {target_date_str} 결과 데이터 스캔 중...")
+    max_retries = 1
+    retry_delay = 1 if os.environ.get("APP_ENV", "prod").lower() == "test" else 600  # 테스트 환경에선 1초, 평소엔 10분 대기
+    
+    success = False
+    for attempt in range(1, 3):  # 1, 2 총 2회 시도
+        logger.info(f"🔍 {target_date_str} 결과 데이터 스캔 중... ({attempt}/2 회차)")
         targets = discover_races(target_date_str)
         
         if not targets:
-            logger.info("아직 대상 데이터가 없습니다. 10분 후 다시 스캔합니다.")
-            time.sleep(600)
-            continue
-            
+            if attempt < 2:
+                logger.info(f"아직 대상 데이터가 없습니다. {retry_delay}초 후 다시 스캔합니다.")
+                time.sleep(retry_delay)
+                continue
+            else:
+                logger.error("❌ 재시도했으나 대상 결과 데이터가 발견되지 않아 취소합니다.")
+                sys.exit(0)
+                
         all_completed = True
         
         for t in targets:
@@ -463,10 +561,19 @@ def run_result_automation_pipeline(mode):
                 all_completed = False
                 
         if not all_completed:
-            logger.info("⏳ 일부 경기장 결과가 미완성입니다. 10분 후 다시 스캔 및 검증을 시도합니다.")
-            time.sleep(600)
-            continue
-            
+            if attempt < 2:
+                logger.info(f"⏳ 일부 경기장 결과가 미완성입니다. {retry_delay}초 후 다시 스캔 및 검증을 시도합니다.")
+                time.sleep(retry_delay)
+                continue
+            else:
+                logger.error("❌ 재시도했으나 일부 경기장 결과가 여전히 미완성입니다. 종료합니다.")
+                sys.exit(1)
+                
+        # 모든 검증 통과 시 루프 탈출
+        success = True
+        break
+        
+    if success:
         logger.info("✨ 모든 경기 결과 데이터 수집 및 검증 완료! 하위 상세 데이터 수집을 시작합니다.")
         
         # 3. 하위 디테일 크롤러 가동 (모든 경기장 대상)
@@ -482,6 +589,9 @@ def run_result_automation_pipeline(mode):
             send_telegram_message(f"❌ [{day_name}] 일부 결과 CSV 데이터 수집 실패! (DB 적재는 가능한 대상만 진행합니다)")
 
         logger.info("✨ 결과 데이터 수집 및 검증 완료! 후속 작업을 진행합니다.")
+        
+        # 크롤링 완료 후 VPN 연결 해제 (DB/API는 로컬 IP로 접근)
+        disconnect_vpn_and_wait()
         
         # 4. DB 업로드 (8번) 및 API 이관 (9번) - 경기장별 순차 처리
         processed_combos = []
@@ -663,7 +773,7 @@ def run_mode_4():
     if not (INFO_DIR / "main.py").exists():
         logger.warning(f"[경고] {INFO_DIR}/main.py 파일을 찾을 수 없습니다.")
     else:
-        subprocess.run([sys.executable, "main.py"], cwd=INFO_DIR)
+        run_subprocess_with_logging([sys.executable, "main.py"], cwd=INFO_DIR)
 
 def run_mode_5():
     """5번 모드: 날씨 및 바장 정보 단독 수집 (자동 탐색 기반)"""
@@ -693,7 +803,7 @@ def run_mode_6(date=None, venue=None, max_retries=3):
         if attempt > 1:
             logger.info(f"--- [DB 업로드 재시도] {attempt}/{max_retries} 회차 ---")
             
-        res = subprocess.run(cmd, cwd=DB_DIR)
+        res = run_subprocess_with_logging(cmd, cwd=DB_DIR)
         if res.returncode == 0:
             logger.info("\n========== DB 업로드 작업이 완료되었습니다. ==========")
             return True
@@ -721,7 +831,7 @@ def run_mode_7(date=None, venue=None, max_retries=3):
         if attempt > 1:
             logger.info(f"--- [API 이관 재시도] {attempt}/{max_retries} 회차 ---")
             
-        res = subprocess.run(cmd, cwd=DB_DIR)
+        res = run_subprocess_with_logging(cmd, cwd=DB_DIR)
         if res.returncode == 0:
             logger.info("\n========== 데이터 이관 작업이 완료되었습니다. ==========")
             return True
@@ -769,7 +879,7 @@ def run_mode_8(date=None, venue=None, max_retries=3):
         if attempt > 1:
             logger.info(f"--- [DB 업로드 재시도] {attempt}/{max_retries} 회차 ---")
             
-        res = subprocess.run(cmd, cwd=DB_DIR)
+        res = run_subprocess_with_logging(cmd, cwd=DB_DIR)
         if res.returncode == 0:
             logger.info("\n========== DB 업로드 작업이 완료되었습니다. ==========")
             return True
@@ -816,7 +926,7 @@ def run_mode_9(date=None, venue=None, max_retries=3):
         if attempt > 1:
             logger.info(f"--- [API 이관 재시도] {attempt}/{max_retries} 회차 ---")
             
-        res = subprocess.run(cmd, cwd=DB_DIR)
+        res = run_subprocess_with_logging(cmd, cwd=DB_DIR)
         if res.returncode == 0:
             logger.info("\n========== 데이터 이관 작업이 완료되었습니다. ==========")
             return True
@@ -895,7 +1005,7 @@ def run_mode_11():
     if not (HR_DIR / "image_downloader.py").exists():
         logger.error(f"[오류] HRNOCrawler/image_downloader.py 파일을 찾을 수 없습니다.")
     else:
-        subprocess.run([sys.executable, "image_downloader.py", "--csv", str(csv_path)], cwd=HR_DIR)
+        run_subprocess_with_logging([sys.executable, "image_downloader.py", "--csv", str(csv_path)], cwd=HR_DIR)
         logger.info("\n========== 다운로드 작업이 완료되었습니다. ==========")
 
 def print_discovery_results(targets):
